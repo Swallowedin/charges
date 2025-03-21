@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from openai import OpenAI
 import time
+import streamlit as st
 
 # ----------------- MODÈLES ET CONSTANTES -----------------
 
