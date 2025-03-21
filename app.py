@@ -270,9 +270,9 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
 
         # Utilisation du client OpenAI correctement initialisé
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",  # ou "gpt-4o-mini" selon celui que vous voulez utiliser
+            model="gpt-4o-mini",  # ou "gpt-4o-mini" selon celui que vous voulez utiliser
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            temperature=0.6
         )
 
         # Les données de réponse ont une structure différente dans la nouvelle API
