@@ -79,12 +79,12 @@ RATIOS_REFERENCE = {
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
-# Configuration du client OpenAI
+# Configuration de l'API OpenAI
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY n'est pas défini dans les variables d'environnement")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai.api_key = OPENAI_API_KEY
 
 # Fonction pour extraire le texte d'une image avec OCR
 def extract_text_from_image(uploaded_file):
@@ -229,11 +229,8 @@ def extract_charges_fallback(text):
     return charges
 
 # Appel à l'API OpenAI pour analyser les clauses et les charges
-def analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface=None):
-    """Analyse des charges et clauses avec GPT-4o-mini"""
-    if not client:
-        return None
-        
+def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
+    """Analyse des charges et clauses avec GPT-3.5-turbo"""
     try:
         # Construction du prompt pour OpenAI
         prompt = f"""
@@ -268,23 +265,22 @@ def analyze_with_openai(client, bail_clauses, charges_details, bail_type, surfac
         NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
         """
 
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},
-            temperature=0.3,  # Valeur plus basse pour réponses plus cohérentes
+            temperature=0.3
         )
-        
-        result = json.loads(response.choices[0].message.content)
+
+        result = json.loads(response.choices[0].message['content'])
         return result
-    
+
     except Exception as e:
         st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
         # Fallback avec analyse simple
         try:
             charges = extract_charges_fallback(charges_details)
             total_amount = sum(charge["amount"] for charge in charges)
-            
+
             return {
                 "clauses_analysis": [{"title": "Clause extraite manuellement", "text": clause.strip()} for clause in bail_clauses.split('\n') if clause.strip()],
                 "charges_analysis": [
