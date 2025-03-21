@@ -2,8 +2,13 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import json
-from openai import OpenAI
 import re
+import io
+import base64
+from openai import OpenAI
+from PIL import Image
+import PyPDF2
+import docx2txt
 
 # Configuration de la page
 st.set_page_config(
@@ -79,7 +84,71 @@ def get_openai_client():
         st.error(f"Erreur lors de la récupération de la clé API OpenAI: {str(e)}")
         return None
 
-# Extraction des charges avec regex (comme backup si GPT ne fonctionne pas)
+# Fonctions pour extraire le texte de différents types de fichiers
+def extract_text_from_pdf(uploaded_file):
+    """Extraire le texte d'un fichier PDF"""
+    text = ""
+    try:
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        for page_num in range(len(pdf_reader.pages)):
+            text += pdf_reader.pages[page_num].extract_text() + "\n"
+        return text
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte du PDF: {str(e)}")
+        return ""
+
+def extract_text_from_docx(uploaded_file):
+    """Extraire le texte d'un fichier Word"""
+    try:
+        text = docx2txt.process(uploaded_file)
+        return text
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte du fichier Word: {str(e)}")
+        return ""
+
+def extract_text_from_txt(uploaded_file):
+    """Extraire le texte d'un fichier TXT"""
+    try:
+        return uploaded_file.getvalue().decode("utf-8")
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte du fichier TXT: {str(e)}")
+        return ""
+
+def get_file_content(uploaded_file):
+    """Obtenir le contenu du fichier selon son type"""
+    if uploaded_file is None:
+        return ""
+        
+    file_type = uploaded_file.type
+    
+    if file_type == "application/pdf":
+        return extract_text_from_pdf(uploaded_file)
+    elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return extract_text_from_docx(uploaded_file)
+    elif file_type == "text/plain":
+        return extract_text_from_txt(uploaded_file)
+    else:
+        st.warning(f"Type de fichier non pris en charge: {file_type}")
+        return ""
+
+def display_file_preview(uploaded_file):
+    """Afficher un aperçu du fichier selon son type"""
+    if uploaded_file is None:
+        return
+        
+    file_type = uploaded_file.type
+    
+    if file_type.startswith("image/"):
+        st.image(uploaded_file, caption="Aperçu de l'image", use_column_width=True)
+    elif file_type == "application/pdf":
+        # Créer un lien pour visualiser le PDF
+        base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+    else:
+        st.write("Aperçu non disponible pour ce type de fichier")
+
+# Extraction des charges avec regex
 def extract_charges_fallback(text):
     """Extrait les charges du texte de la reddition avec regex"""
     charges = []
@@ -127,7 +196,7 @@ def analyze_with_openai(client, bail_clauses, charges_details, bail_type, surfac
         return None
         
     try:
-        # Construction du prompt pour OpenAI (réduit pour optimisation)
+        # Construction du prompt pour OpenAI
         prompt = f"""
         # Analyse de charges locatives
         
@@ -267,46 +336,107 @@ def main():
         help="Utilisé pour calculer le ratio de charges au m²"
     )
     
-    # Formulaire principal
-    with st.form("input_form"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Clauses du bail concernant les charges")
-            bail_clauses = st.text_area(
-                "Copiez-collez les clauses du bail concernant les charges refacturables",
-                height=250,
-                help="Utilisez un format avec une clause par ligne, commençant par •, - ou un numéro"
-            )
-        
-        with col2:
-            st.subheader("Détail des charges refacturées")
-            charges_details = st.text_area(
-                "Entrez le détail des charges (poste et montant)",
-                height=250,
-                help="Format recommandé: une charge par ligne avec le montant en euros (ex: 'Nettoyage: 1200€')"
-            )
-        
-        specific_questions = st.text_area(
-            "Questions spécifiques (facultatif)",
-            help="Avez-vous des questions particulières concernant certaines charges?"
-        )
-        
-        submitted = st.form_submit_button("Analyser les charges")
+    # Interface principale avec onglets
+    tab1, tab2 = st.tabs(["Saisie manuelle", "Téléchargement de fichiers"])
     
-    # Traitement du formulaire
-    if submitted:
-        if not bail_clauses or not charges_details:
+    # Onglet 1: Saisie manuelle
+    with tab1:
+        with st.form("input_form_manual"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Clauses du bail concernant les charges")
+                bail_clauses_manual = st.text_area(
+                    "Copiez-collez les clauses du bail concernant les charges refacturables",
+                    height=250,
+                    help="Utilisez un format avec une clause par ligne, commençant par •, - ou un numéro"
+                )
+            
+            with col2:
+                st.subheader("Détail des charges refacturées")
+                charges_details_manual = st.text_area(
+                    "Entrez le détail des charges (poste et montant)",
+                    height=250,
+                    help="Format recommandé: une charge par ligne avec le montant en euros (ex: 'Nettoyage: 1200€')"
+                )
+            
+            specific_questions = st.text_area(
+                "Questions spécifiques (facultatif)",
+                help="Avez-vous des questions particulières concernant certaines charges?"
+            )
+            
+            submitted_manual = st.form_submit_button("Analyser les charges")
+    
+    # Onglet 2: Téléchargement de fichiers
+    with tab2:
+        with st.form("input_form_files"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Document du bail")
+                bail_file = st.file_uploader(
+                    "Téléchargez le bail (PDF, Word, TXT)",
+                    type=["pdf", "docx", "txt"],
+                    help="Téléchargez le document contenant les clauses du bail"
+                )
+                
+                if bail_file:
+                    with st.expander("Aperçu du fichier du bail"):
+                        display_file_preview(bail_file)
+            
+            with col2:
+                st.subheader("Document des charges")
+                charges_file = st.file_uploader(
+                    "Téléchargez la reddition des charges (PDF, Word, TXT)",
+                    type=["pdf", "docx", "txt"],
+                    help="Téléchargez le document contenant le détail des charges"
+                )
+                
+                if charges_file:
+                    with st.expander("Aperçu du fichier des charges"):
+                        display_file_preview(charges_file)
+            
+            specific_questions_file = st.text_area(
+                "Questions spécifiques (facultatif)",
+                help="Avez-vous des questions particulières concernant certaines charges?"
+            )
+            
+            submitted_files = st.form_submit_button("Analyser les fichiers")
+    
+    # Traitement du formulaire de saisie manuelle
+    if submitted_manual:
+        if not bail_clauses_manual or not charges_details_manual:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
         else:
             with st.spinner("Analyse en cours avec GPT-4o-mini..."):
                 client = get_openai_client()
                 if client:
                     # Analyser les charges avec OpenAI
-                    analysis = analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface)
+                    analysis = analyze_with_openai(client, bail_clauses_manual, charges_details_manual, bail_type, surface)
                     if analysis:
                         st.session_state.analysis = analysis
                         st.session_state.analysis_complete = True
+    
+    # Traitement du formulaire de téléchargement de fichiers
+    if submitted_files:
+        if not bail_file or not charges_file:
+            st.error("Veuillez télécharger les deux fichiers (bail et charges).")
+        else:
+            with st.spinner("Extraction et analyse des fichiers en cours..."):
+                # Extraire le texte des fichiers
+                bail_clauses_file = get_file_content(bail_file)
+                charges_details_file = get_file_content(charges_file)
+                
+                if not bail_clauses_file or not charges_details_file:
+                    st.error("Impossible d'extraire le texte des fichiers téléchargés.")
+                else:
+                    client = get_openai_client()
+                    if client:
+                        # Analyser les charges avec OpenAI
+                        analysis = analyze_with_openai(client, bail_clauses_file, charges_details_file, bail_type, surface)
+                        if analysis:
+                            st.session_state.analysis = analysis
+                            st.session_state.analysis_complete = True
     
     # Afficher les résultats
     if st.session_state.analysis_complete:
@@ -359,7 +489,7 @@ def main():
             for charge in charges_analysis
         ])
         
-        # Afficher le DataFrame sans style conditionnel pour éviter les problèmes
+        # Afficher le DataFrame
         st.dataframe(df)
         
         # Charges contestables
@@ -390,7 +520,7 @@ def main():
         # Export des résultats
         st.download_button(
             label="Télécharger l'analyse complète (JSON)",
-            data=json.dumps(analysis, indent=2, ensure_ascii=False).encode('utf-8'),
+            data=json.dumps(analysis, indent=2, ensure_allow_nan=False, ensure_ascii=False).encode('utf-8'),
             file_name='analyse_charges.json',
             mime='application/json',
         )
