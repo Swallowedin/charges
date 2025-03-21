@@ -157,6 +157,20 @@ def get_file_content(uploaded_file):
         st.warning(f"Type de fichier non pris en charge: {file_type}")
         return ""
 
+def process_multiple_files(uploaded_files):
+    """Traiter plusieurs fichiers et concaténer leur contenu"""
+    combined_text = ""
+    
+    for file in uploaded_files:
+        # Obtenir le contenu du fichier
+        file_content = get_file_content(file)
+        if file_content:
+            combined_text += f"\n\n--- Début du fichier: {file.name} ---\n\n"
+            combined_text += file_content
+            combined_text += f"\n\n--- Fin du fichier: {file.name} ---\n\n"
+    
+    return combined_text
+
 def display_file_preview(uploaded_file):
     """Afficher un aperçu du fichier selon son type"""
     if uploaded_file is None:
@@ -165,14 +179,14 @@ def display_file_preview(uploaded_file):
     file_type = uploaded_file.type
     
     if file_type.startswith("image/"):
-        st.image(uploaded_file, caption="Aperçu de l'image", use_column_width=True)
+        st.image(uploaded_file, caption=f"Aperçu: {uploaded_file.name}", use_column_width=True)
     elif file_type == "application/pdf":
         # Créer un lien pour visualiser le PDF
         base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
         pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500" type="application/pdf"></iframe>'
         st.markdown(pdf_display, unsafe_allow_html=True)
     else:
-        st.write("Aperçu non disponible pour ce type de fichier")
+        st.write(f"Aperçu non disponible pour {uploaded_file.name} (type: {file_type})")
 
 # Extraction des charges avec regex
 def extract_charges_fallback(text):
@@ -399,28 +413,38 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader("Document du bail")
-                bail_file = st.file_uploader(
-                    "Téléchargez le bail (PDF, Word, TXT, Image)",
+                st.subheader("Documents du bail")
+                bail_files = st.file_uploader(
+                    "Téléchargez le(s) document(s) du bail (PDF, Word, TXT, Image)",
                     type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
-                    help="Téléchargez le document contenant les clauses du bail"
+                    accept_multiple_files=True,
+                    help="Téléchargez un ou plusieurs documents contenant les clauses du bail"
                 )
                 
-                if bail_file:
-                    with st.expander("Aperçu du fichier du bail"):
-                        display_file_preview(bail_file)
+                if bail_files:
+                    st.write(f"{len(bail_files)} fichier(s) téléchargé(s) pour le bail")
+                    with st.expander("Aperçu des fichiers du bail"):
+                        for file in bail_files:
+                            st.write(f"**{file.name}**")
+                            display_file_preview(file)
+                            st.markdown("---")
             
             with col2:
-                st.subheader("Document des charges")
-                charges_file = st.file_uploader(
-                    "Téléchargez la reddition des charges (PDF, Word, TXT, Image)",
+                st.subheader("Documents des charges")
+                charges_files = st.file_uploader(
+                    "Téléchargez le(s) document(s) des charges (PDF, Word, TXT, Image)",
                     type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
-                    help="Téléchargez le document contenant le détail des charges"
+                    accept_multiple_files=True,
+                    help="Téléchargez un ou plusieurs documents contenant le détail des charges"
                 )
                 
-                if charges_file:
-                    with st.expander("Aperçu du fichier des charges"):
-                        display_file_preview(charges_file)
+                if charges_files:
+                    st.write(f"{len(charges_files)} fichier(s) téléchargé(s) pour les charges")
+                    with st.expander("Aperçu des fichiers des charges"):
+                        for file in charges_files:
+                            st.write(f"**{file.name}**")
+                            display_file_preview(file)
+                            st.markdown("---")
             
             specific_questions_file = st.text_area(
                 "Questions spécifiques (facultatif)",
@@ -445,28 +469,28 @@ def main():
     
     # Traitement du formulaire de téléchargement de fichiers
     if submitted_files:
-        if not bail_file or not charges_file:
-            st.error("Veuillez télécharger les deux fichiers (bail et charges).")
+        if not bail_files or not charges_files:
+            st.error("Veuillez télécharger au moins un fichier pour le bail et un fichier pour les charges.")
         else:
             with st.spinner("Extraction et analyse des fichiers en cours..."):
-                # Extraire le texte des fichiers
-                bail_clauses_file = get_file_content(bail_file)
-                charges_details_file = get_file_content(charges_file)
+                # Extraire et combiner le texte de tous les fichiers
+                bail_clauses_combined = process_multiple_files(bail_files)
+                charges_details_combined = process_multiple_files(charges_files)
                 
-                if not bail_clauses_file or not charges_details_file:
+                if not bail_clauses_combined or not charges_details_combined:
                     st.error("Impossible d'extraire le texte des fichiers téléchargés.")
                 else:
                     # Afficher le texte extrait pour vérification
                     with st.expander("Texte extrait du bail"):
-                        st.text(bail_clauses_file[:1000] + "..." if len(bail_clauses_file) > 1000 else bail_clauses_file)
+                        st.text(bail_clauses_combined[:2000] + "..." if len(bail_clauses_combined) > 2000 else bail_clauses_combined)
                     
                     with st.expander("Texte extrait des charges"):
-                        st.text(charges_details_file[:1000] + "..." if len(charges_details_file) > 1000 else charges_details_file)
+                        st.text(charges_details_combined[:2000] + "..." if len(charges_details_combined) > 2000 else charges_details_combined)
                     
                     client = get_openai_client()
                     if client:
                         # Analyser les charges avec OpenAI
-                        analysis = analyze_with_openai(client, bail_clauses_file, charges_details_file, bail_type, surface)
+                        analysis = analyze_with_openai(client, bail_clauses_combined, charges_details_combined, bail_type, surface)
                         if analysis:
                             st.session_state.analysis = analysis
                             st.session_state.analysis_complete = True
