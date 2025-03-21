@@ -264,23 +264,29 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
             "global_analysis":{{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""}},
             "recommendations":[""]
         }}
-
-        NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
         """
 
-        # Utilisation du client OpenAI correctement initialisé
+        # Utiliser gpt-4o-mini avec response_format pour garantir un JSON valide
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  # ou "gpt-4o-mini" selon celui que vous voulez utiliser
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.6
+            temperature=0.3,
+            response_format={"type": "json_object"}  # Forcer une réponse JSON
         )
 
-        # Les données de réponse ont une structure différente dans la nouvelle API
+        # Récupérer le contenu de la réponse
         result = json.loads(response.choices[0].message.content)
         return result
 
     except Exception as e:
         st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
+        
+        # Afficher des détails supplémentaires pour le débogage
+        if 'response' in locals() and hasattr(response, 'choices') and len(response.choices) > 0:
+            st.write("Début de la réponse reçue:")
+            content = response.choices[0].message.content
+            st.code(content[:200] + "..." if len(content) > 200 else content)
+        
         # Fallback avec analyse simple
         try:
             charges = extract_charges_fallback(charges_details)
