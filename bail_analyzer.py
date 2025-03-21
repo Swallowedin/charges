@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 import io
 import base64
 import os
+import streamlit as st
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from openai import OpenAI
 import time
-import streamlit as st
 
 # ----------------- MODÈLES ET CONSTANTES -----------------
 
@@ -23,6 +23,60 @@ class ChargeCategory:
     description: str           # Description de la catégorie
     recoverable: bool = True   # Est-ce généralement récupérable ?
     legal_references: List[str] = None  # Références légales
+
+# Définition des constantes
+CHARGES_TYPES = {
+    "commercial": [
+        "Entretien et nettoyage des parties communes",
+        "Eau et électricité des parties communes",
+        "Ascenseurs et équipements techniques",
+        "Espaces verts",
+        "Sécurité et surveillance",
+        "Gestion et honoraires",
+        "Impôts et taxes",
+        "Assurances"
+    ],
+    "habitation": [
+        "Entretien des parties communes",
+        "Eau",
+        "Chauffage collectif",
+        "Ascenseur",
+        "Espaces verts",
+        "Gardiennage"
+    ]
+}
+
+CHARGES_CONTESTABLES = [
+    "Grosses réparations (article 606 du Code civil)",
+    "Remplacement d'équipements obsolètes",
+    "Honoraires de gestion excessifs (>10% du montant des charges)",
+    "Frais de personnel sans rapport avec l'immeuble",
+    "Travaux d'amélioration (vs. entretien)",
+    "Taxes normalement à la charge du propriétaire",
+    "Assurance des murs et structure du bâtiment"
+]
+
+RATIOS_REFERENCE = {
+    "commercial": {
+        "charges/m2/an": {
+            "min": 30,
+            "max": 150,
+            "median": 80
+        },
+        "honoraires gestion (% charges)": {
+            "min": 2,
+            "max": 8,
+            "median": 5
+        }
+    },
+    "habitation": {
+        "charges/m2/an": {
+            "min": 15,
+            "max": 60,
+            "median": 35
+        }
+    }
+}
 
 # Catégories standard de charges pour bail commercial
 COMMERCIAL_CHARGES = [
@@ -146,6 +200,47 @@ CONTESTATION_CRITERIA = [
 ]
 
 # ----------------- FONCTIONS D'EXTRACTION -----------------
+
+# Extraction des charges avec regex
+def extract_charges_fallback(text):
+    """Extrait les charges du texte de la reddition avec regex"""
+    charges = []
+    lines = text.split('\n')
+    current_category = ""
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Ligne contenant un montant en euros
+        if '€' in line:
+            # Essayer d'extraire le montant
+            amount_match = re.search(r'(\d[\d\s]*[\d,\.]+)\s*€', line)
+            if amount_match:
+                amount_str = amount_match.group(1).replace(' ', '').replace(',', '.')
+                try:
+                    amount = float(amount_str)
+                    # Extraire la description (tout ce qui précède le montant)
+                    description = line[:amount_match.start()].strip()
+                    if not description and current_category:
+                        description = current_category
+                    
+                    charges.append({
+                        "category": current_category,
+                        "description": description,
+                        "amount": amount
+                    })
+                except ValueError:
+                    pass
+        else:
+            # Probablement une catégorie
+            if ':' in line:
+                current_category = line.split(':')[0].strip()
+            elif line.isupper() or (len(line) > 3 and not any(c.isdigit() for c in line)):
+                current_category = line
+    
+    return charges
 
 def extract_relevant_sections(bail_text: str) -> str:
     """
