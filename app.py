@@ -12,6 +12,7 @@ import docx2txt
 import pytesseract
 import cv2
 import numpy as np
+import os
 
 # Configuration de la page
 st.set_page_config(
