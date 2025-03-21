@@ -1,18 +1,19 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 import json
-import os
 from openai import OpenAI
 import re
 
-# Configuration de la page
-st.set_page_config(
-    page_title="Analyseur de Charges Locatives avec GPT-4o-mini",
-    page_icon="📊",
-    layout="wide"
-)
+# Configuration de la page avec mise en cache
+@st.cache_resource
+def configure_page():
+    st.set_page_config(
+        page_title="Analyseur de Charges Locatives avec GPT-4o-mini",
+        page_icon="📊",
+        layout="wide"
+    )
+configure_page()
 
 # Définition des constantes
 CHARGES_TYPES = {
@@ -73,19 +74,14 @@ if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
 # Récupération de la clé API depuis les secrets de Streamlit Cloud
-if 'api_key' not in st.session_state:
-    try:
-        st.session_state.api_key = st.secrets["openai"]["api_key"]
-    except:
-        st.session_state.api_key = ""
-
-# Fonction pour initialiser le client OpenAI
+@st.cache_resource
 def get_openai_client():
-    api_key = st.session_state.api_key
-    if not api_key:
-        st.error("Clé API OpenAI non configurée. Veuillez configurer les secrets dans Streamlit Cloud.")
+    try:
+        api_key = st.secrets["openai"]["api_key"]
+        return OpenAI(api_key=api_key)
+    except Exception as e:
+        st.error(f"Erreur lors de la récupération de la clé API OpenAI: {str(e)}")
         return None
-    return OpenAI(api_key=api_key)
 
 # Extraction des charges avec regex (comme backup si GPT ne fonctionne pas)
 def extract_charges_fallback(text):
@@ -131,89 +127,48 @@ def extract_charges_fallback(text):
 # Appel à l'API OpenAI pour analyser les clauses et les charges
 def analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface=None):
     """Analyse des charges et clauses avec GPT-4o-mini"""
+    if not client:
+        return None
+        
     try:
-        # Construction du prompt pour OpenAI
+        # Construction du prompt pour OpenAI (réduit pour optimisation)
         prompt = f"""
         # Analyse de charges locatives
         
         ## Contexte
-        Je dois analyser des charges locatives qui me sont refacturées par mon bailleur pour vérifier leur cohérence avec les clauses du bail. Il s'agit d'un bail {bail_type}.
+        Bail {bail_type}, analyse des charges refacturées vs clauses du bail.
 
         ## Référentiel
-        Pour un bail {bail_type}, les charges habituellement refacturables comprennent:
-        {', '.join(CHARGES_TYPES[bail_type])}
+        Charges habituellement refacturables: {', '.join(CHARGES_TYPES[bail_type])}
+        Charges contestables: {', '.join(CHARGES_CONTESTABLES)}
 
-        Les charges souvent contestables comprennent:
-        {', '.join(CHARGES_CONTESTABLES)}
-
-        ## Clauses du bail concernant les charges
-        ```
+        ## Clauses du bail
         {bail_clauses}
-        ```
 
-        ## Détail des charges refacturées
-        ```
+        ## Charges refacturées
         {charges_details}
-        ```
 
-        ## Surface locative
-        {surface if surface else "Non spécifiée"}
+        ## Surface: {surface if surface else "Non spécifiée"}
 
         ## Tâche
-        1. Extraire et lister toutes les clauses contractuelles définissant les charges refacturables.
-        2. Extraire et lister toutes les charges refacturées avec leur montant.
-        3. Pour chaque charge, analyser sa conformité avec les clauses du bail.
-        4. Identifier les charges potentiellement contestables.
-        5. Calculer le total des charges et, si la surface est fournie, les charges au m².
-        6. Analyser le réalisme des charges par rapport aux références suivantes:
-           - Bail commercial: {RATIOS_REFERENCE['commercial']['charges/m²/an']['min']}-{RATIOS_REFERENCE['commercial']['charges/m²/an']['max']}€/m²/an
-           - Bail d'habitation: {RATIOS_REFERENCE['habitation']['charges/m²/an']['min']}-{RATIOS_REFERENCE['habitation']['charges/m²/an']['max']}€/m²/an
-        7. Formuler des recommandations.
+        1. Extraire clauses et charges avec montants
+        2. Analyser conformité de chaque charge avec le bail
+        3. Identifier charges contestables
+        4. Calculer total et ratio/m² si surface fournie
+        5. Analyser réalisme: Commercial {RATIOS_REFERENCE['commercial']['charges/m²/an']['min']}-{RATIOS_REFERENCE['commercial']['charges/m²/an']['max']}€/m²/an, Habitation {RATIOS_REFERENCE['habitation']['charges/m²/an']['min']}-{RATIOS_REFERENCE['habitation']['charges/m²/an']['max']}€/m²/an
+        6. Formuler recommandations
 
-        ## Format de réponse
-        Réponds en JSON structuré comme ceci:
-        ```json
-        {{
-            "clauses_analysis": [
-                {{
-                    "title": "Titre de la clause",
-                    "text": "Texte de la clause"
-                }}
-            ],
-            "charges_analysis": [
-                {{
-                    "category": "Catégorie de la charge",
-                    "description": "Description de la charge",
-                    "amount": 1000.00,
-                    "percentage": 25.0,
-                    "conformity": "conforme|à vérifier",
-                    "conformity_details": "Détails sur la conformité",
-                    "matching_clause": "Titre de la clause correspondante ou null",
-                    "contestable": true|false,
-                    "contestable_reason": "Raison de la contestabilité ou null"
-                }}
-            ],
-            "global_analysis": {{
-                "total_amount": 4000.00,
-                "charge_per_sqm": 100.00,
-                "conformity_rate": 75.0,
-                "realism": "normal|bas|élevé",
-                "realism_details": "Détails sur le réalisme"
-            }},
-            "recommendations": [
-                "Recommandation 1",
-                "Recommandation 2"
-            ]
-        }}
-        ```
-        
+        ## Format JSON
+        {"clauses_analysis":[{"title":"","text":""}],"charges_analysis":[{"category":"","description":"","amount":0,"percentage":0,"conformity":"conforme|à vérifier","conformity_details":"","matching_clause":"","contestable":true|false,"contestable_reason":""}],"global_analysis":{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""},"recommendations":[""]}
+
         NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
         """
 
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="gpt-4o-mini",
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            temperature=0.3,  # Valeur plus basse pour réponses plus cohérentes
         )
         
         result = json.loads(response.choices[0].message.content)
@@ -257,8 +212,9 @@ def analyze_with_openai(client, bail_clauses, charges_details, bail_type, surfac
             st.error(f"Erreur lors de l'analyse de backup: {str(fallback_error)}")
             return None
 
+@st.cache_data
 def plot_charges_breakdown(charges_analysis):
-    """Crée un graphique de répartition des charges"""
+    """Crée un graphique de répartition des charges (mis en cache)"""
     if not charges_analysis:
         return None
     
@@ -298,32 +254,15 @@ def plot_charges_breakdown(charges_analysis):
 def main():
     st.title("Analyseur de Charges Locatives avec GPT-4o-mini")
     st.markdown("""
-    Cet outil utilise l'IA de OpenAI (GPT-4o-mini) pour analyser la cohérence entre les charges 
-    qui vous sont refacturées par votre bailleur et les clauses de votre contrat de bail.
+    Cet outil analyse la cohérence entre les charges refacturées par votre bailleur 
+    et les clauses de votre contrat de bail en utilisant GPT-4o-mini.
     """)
+    
+    # Récupérer le client OpenAI dès le démarrage
+    client = get_openai_client()
     
     # Sidebar pour la configuration
     st.sidebar.header("Configuration")
-    
-    # Affichage du statut de la clé API dans la sidebar
-    if st.session_state.api_key:
-        st.sidebar.success("✅ Clé API OpenAI configurée via les secrets Streamlit")
-    else:
-        st.sidebar.error("❌ Clé API OpenAI non configurée. Ajoutez-la dans les secrets Streamlit Cloud.")
-        st.sidebar.info("Dans votre app Streamlit Cloud: Paramètres → Secrets → Ajoutez:\n```\n[openai]\napi_key = \"sk-votreclé...\"\n```")
-        
-        # Offrir une option de secours pour entrer la clé manuellement
-        with st.sidebar.expander("Ou entrez votre clé API manuellement", expanded=False):
-            api_key = st.text_input(
-                "Clé API OpenAI", 
-                value="",
-                type="password",
-                help="Votre clé API OpenAI (commence par 'sk-')"
-            )
-            if api_key:
-                st.session_state.api_key = api_key
-                st.success("Clé API enregistrée pour cette session")
-                st.info("Pour une solution permanente, configurez les secrets dans Streamlit Cloud")
     
     bail_type = st.sidebar.selectbox(
         "Type de bail",
@@ -335,17 +274,6 @@ def main():
         "Surface locative (m²)",
         help="Utilisé pour calculer le ratio de charges au m²"
     )
-    
-    st.sidebar.header("Charges de référence")
-    st.sidebar.markdown(f"""
-    **Charges habituellement refacturables (bail {bail_type}):**
-    """)
-    for charge_type in CHARGES_TYPES[bail_type]:
-        st.sidebar.markdown(f"- {charge_type}")
-    
-    st.sidebar.markdown("**Charges souvent contestables:**")
-    for charge in CHARGES_CONTESTABLES:
-        st.sidebar.markdown(f"- {charge}")
     
     # Formulaire principal
     with st.form("input_form"):
@@ -378,17 +306,15 @@ def main():
     if submitted:
         if not bail_clauses or not charges_details:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
-        elif not st.session_state.api_key:
-            st.error("Clé API OpenAI non configurée. Veuillez configurer les secrets dans Streamlit Cloud ou entrer une clé manuellement.")
+        elif not client:
+            st.error("Erreur de configuration de l'API OpenAI. Vérifiez les secrets dans Streamlit Cloud.")
         else:
             with st.spinner("Analyse en cours avec GPT-4o-mini..."):
-                client = get_openai_client()
-                if client:
-                    # Analyser les charges avec OpenAI
-                    analysis = analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface)
-                    if analysis:
-                        st.session_state.analysis = analysis
-                        st.session_state.analysis_complete = True
+                # Analyser les charges avec OpenAI
+                analysis = analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface)
+                if analysis:
+                    st.session_state.analysis = analysis
+                    st.session_state.analysis_complete = True
     
     # Afficher les résultats
     if st.session_state.analysis_complete:
@@ -460,7 +386,7 @@ def main():
         
         st.dataframe(styled_df)
         
-        # Charges contestables
+        # Charges contestables (avec accordéon pour améliorer les performances)
         contestable_charges = [c for c in charges_analysis if c.get("contestable")]
         if contestable_charges:
             st.subheader("Charges potentiellement contestables")
