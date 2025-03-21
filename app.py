@@ -81,7 +81,10 @@ if 'analysis_complete' not in st.session_state:
 # Récupération de la clé API depuis les secrets de Streamlit Cloud
 def get_openai_client():
     try:
+        # Récupérer la clé API des secrets
         api_key = st.secrets["openai"]["api_key"]
+        
+        # Créer le client sans l'argument problématique 'proxies'
         return OpenAI(api_key=api_key)
     except Exception as e:
         st.error(f"Erreur lors de la récupération de la clé API OpenAI: {str(e)}")
