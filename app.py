@@ -5,7 +5,7 @@ import json
 import re
 import io
 import base64
-import Openai
+import openai
 from PIL import Image
 import PyPDF2
 import docx2txt
@@ -55,7 +55,7 @@ CHARGES_CONTESTABLES = [
 
 RATIOS_REFERENCE = {
     "commercial": {
-        "charges/m²/an": {
+        "charges/m2/an": {
             "min": 30,
             "max": 150,
             "median": 80
@@ -67,7 +67,7 @@ RATIOS_REFERENCE = {
         }
     },
     "habitation": {
-        "charges/m²/an": {
+        "charges/m2/an": {
             "min": 15,
             "max": 60,
             "median": 35
@@ -94,14 +94,14 @@ def extract_text_from_image(uploaded_file):
         image_bytes = uploaded_file.getvalue()
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
+
         # Prétraitement de l'image pour améliorer l'OCR
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
+
         # Appliquer l'OCR
         text = pytesseract.image_to_string(thresh, lang='fra')
-        
+
         return text
     except Exception as e:
         st.error(f"Erreur lors de l'extraction du texte de l'image: {str(e)}")
@@ -229,81 +229,87 @@ def extract_charges_fallback(text):
     return charges
 
 # Appel à l'API OpenAI pour analyser les clauses et les charges
-    ## Contexte
-    Bail {bail_type}, analyse des charges refacturées vs clauses du bail.
-
-    ## Référentiel
-    Charges habituellement refacturables: {', '.join(CHARGES_TYPES[bail_type])}
-    Charges contestables: {', '.join(CHARGES_CONTESTABLES)}
-
-    ## Clauses du bail
-    {bail_clauses}
-
-    ## Charges refacturées
-    {charges_details}
-
-    ## Surface: {surface if surface else "Non spécifiée"}
-
-    ## Tâche
-    1. Extraire clauses et charges avec montants
-    2. Analyser conformité de chaque charge avec le bail
-    3. Identifier charges contestables
-    4. Calculer total et ratio/m² si surface fournie
-    5. Analyser réalisme: Commercial {RATIOS_REFERENCE['commercial']['charges/m²/an']['min']}-{RATIOS_REFERENCE['commercial']['charges/m²/an']['max']}€/m²/an, Habitation {RATIOS_REFERENCE['habitation']['charges/m²/an']['min']}-{RATIOS_REFERENCE['habitation']['charges/m²/an']['max']}€/m²/an
-    6. Formuler recommandations
-
-    ## Format JSON
-    {"clauses_analysis":[{"title":"","text":""}],"charges_analysis":[{"category":"","description":"","amount":0,"percentage":0,"conformity":"conforme|à vérifier","conformity_details":"","matching_clause":"","contestable":true|false,"contestable_reason":""}],"global_analysis":{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""},"recommendations":[""]}
-
-    NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
-    """
-
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-
-    result = json.loads(response.choices[0].message['content'])
-    return result
-
-except Exception as e:
-    st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
-    # Fallback avec analyse simple
+def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
+    """Analyse des charges et clauses avec GPT-3.5-turbo"""
     try:
-        charges = extract_charges_fallback(charges_details)
-        total_amount = sum(charge["amount"] for charge in charges)
+        prompt = f"""
+        # Analyse de charges locatives
+        
+        ## Contexte
+        Bail {bail_type}, analyse des charges refacturées vs clauses du bail.
 
-        return {
-            "clauses_analysis": [{"title": "Clause extraite manuellement", "text": clause.strip()} for clause in bail_clauses.split('\n') if clause.strip()],
-            "charges_analysis": [
-                {
-                    "category": charge["category"],
-                    "description": charge["description"],
-                    "amount": charge["amount"],
-                    "percentage": (charge["amount"] / total_amount * 100) if total_amount > 0 else 0,
-                    "conformity": "à vérifier",
-                    "conformity_details": "Analyse de backup (OpenAI indisponible)",
-                    "matching_clause": None,
-                    "contestable": False,
-                    "contestable_reason": None
-                } for charge in charges
-            ],
-            "global_analysis": {
-                "total_amount": total_amount,
-                "charge_per_sqm": total_amount / float(surface) if surface else None,
-                "conformity_rate": 0,
-                "realism": "indéterminé",
-                "realism_details": "Analyse de backup (OpenAI indisponible)"
-            },
-            "recommendations": [
-                "Vérifier manuellement la conformité des charges avec les clauses du bail",
-                "Demander des justificatifs détaillés pour toutes les charges importantes"
-            ]
-        }
-    except Exception as fallback_error:
-        st.error(f"Erreur lors de l'analyse de backup: {str(fallback_error)}")
-        return None
+        ## Référentiel
+        Charges habituellement refacturables: {', '.join(CHARGES_TYPES[bail_type])}
+        Charges contestables: {', '.join(CHARGES_CONTESTABLES)}
+
+        ## Clauses du bail
+        {bail_clauses}
+
+        ## Charges refacturées
+        {charges_details}
+
+        ## Surface: {surface if surface else "Non spécifiée"}
+
+        ## Tâche
+        1. Extraire clauses et charges avec montants
+        2. Analyser conformité de chaque charge avec le bail
+        3. Identifier charges contestables
+        4. Calculer total et ratio/m2 si surface fournie
+        5. Analyser réalisme: Commercial {RATIOS_REFERENCE['commercial']['charges/m2/an']['min']}-{RATIOS_REFERENCE['commercial']['charges/m2/an']['max']}€/m2/an, Habitation {RATIOS_REFERENCE['habitation']['charges/m2/an']['min']}-{RATIOS_REFERENCE['habitation']['charges/m2/an']['max']}€/m2/an
+        6. Formuler recommandations
+
+        ## Format JSON
+        {"clauses_analysis":[{"title":"","text":""}],"charges_analysis":[{"category":"","description":"","amount":0,"percentage":0,"conformity":"conforme|à vérifier","conformity_details":"","matching_clause":"","contestable":true|false,"contestable_reason":""}],"global_analysis":{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""},"recommendations":[""]}
+
+        NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
+        """
+
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+
+        result = json.loads(response.choices[0].message['content'])
+        return result
+
+    except Exception as e:
+        st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
+        # Fallback avec analyse simple
+        try:
+            charges = extract_charges_fallback(charges_details)
+            total_amount = sum(charge["amount"] for charge in charges)
+
+            return {
+                "clauses_analysis": [{"title": "Clause extraite manuellement", "text": clause.strip()} for clause in bail_clauses.split('\n') if clause.strip()],
+                "charges_analysis": [
+                    {
+                        "category": charge["category"],
+                        "description": charge["description"],
+                        "amount": charge["amount"],
+                        "percentage": (charge["amount"] / total_amount * 100) if total_amount > 0 else 0,
+                        "conformity": "à vérifier",
+                        "conformity_details": "Analyse de backup (OpenAI indisponible)",
+                        "matching_clause": None,
+                        "contestable": False,
+                        "contestable_reason": None
+                    } for charge in charges
+                ],
+                "global_analysis": {
+                    "total_amount": total_amount,
+                    "charge_per_sqm": total_amount / float(surface) if surface else None,
+                    "conformity_rate": 0,
+                    "realism": "indéterminé",
+                    "realism_details": "Analyse de backup (OpenAI indisponible)"
+                },
+                "recommendations": [
+                    "Vérifier manuellement la conformité des charges avec les clauses du bail",
+                    "Demander des justificatifs détaillés pour toutes les charges importantes"
+                ]
+            }
+        except Exception as fallback_error:
+            st.error(f"Erreur lors de l'analyse de backup: {str(fallback_error)}")
+            return None
         
 def plot_charges_breakdown(charges_analysis):
     """Crée un graphique de répartition des charges"""
