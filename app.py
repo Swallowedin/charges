@@ -80,7 +80,7 @@ if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
 # Configuration de l'API OpenAI
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"] if "OPENAI_API_KEY" in st.secrets else os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY n'est pas défini dans les variables d'environnement")
 
