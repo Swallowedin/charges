@@ -259,8 +259,13 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         6. Formuler recommandations
 
         ## Format JSON
-        {"clauses_analysis":[{"title":"","text":""}],"charges_analysis":[{"category":"","description":"","amount":0,"percentage":0,"conformity":"conforme|à vérifier","conformity_details":"","matching_clause":"","contestable":true|false,"contestable_reason":""}],"global_analysis":{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""},"recommendations":[""]}
-        
+        {{
+            "clauses_analysis":[{{"title":"","text":""}}],
+            "charges_analysis":[{{"category":"","description":"","amount":0,"percentage":0,"conformity":"conforme|à vérifier","conformity_details":"","matching_clause":"","contestable":true|false,"contestable_reason":""}}],
+            "global_analysis":{{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""}},
+            "recommendations":[""]
+        }}
+
         NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
         """
 
