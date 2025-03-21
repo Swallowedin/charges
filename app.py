@@ -78,13 +78,19 @@ RATIOS_REFERENCE = {
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
-# Récupération de la clé API depuis les secrets de Streamlit Cloud
 def get_openai_client():
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY n'est pas défini dans les variables d'environnement")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+    """Initialise le client OpenAI uniquement si nécessaire"""
+    try:
+        if 'OPENAI_API_KEY' in st.secrets:
+            client = OpenAI(
+                api_key=st.secrets['OPENAI_API_KEY'],
+                base_url="https://api.openai.com/v1"  # URL API explicite
+            )
+            return client
+    except Exception as e:
+        st.warning('⚠️ Configuration OpenAI manquante ou invalide')
+        st.error(f"Erreur : {str(e)}")
+    return None
 
 # Fonction pour extraire le texte d'une image avec OCR
 def extract_text_from_image(uploaded_file):
