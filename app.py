@@ -371,7 +371,7 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                temperature=0.1,
                 response_format={"type": "json_object"}  # Forcer une réponse JSON
             )
             result = json.loads(response.choices[0].message.content)
