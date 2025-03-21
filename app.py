@@ -1,26 +1,18 @@
 import streamlit as st
 import pandas as pd
-import re
-import nltk
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
 import matplotlib.pyplot as plt
 import seaborn as sns
+import json
+import os
+from openai import OpenAI
+import re
 
 # Configuration de la page
 st.set_page_config(
-    page_title="Analyseur de Charges Locatives",
+    page_title="Analyseur de Charges Locatives avec GPT-4o-mini",
     page_icon="📊",
     layout="wide"
 )
-
-# Initialisation NLTK (à commenter si déjà installé)
-# Décommenter lors du premier déploiement
-# @st.cache_resource
-# def download_nltk_resources():
-#     nltk.download('punkt')
-#     nltk.download('stopwords')
-# download_nltk_resources()
 
 # Définition des constantes
 CHARGES_TYPES = {
@@ -79,47 +71,20 @@ RATIOS_REFERENCE = {
 # Initialisation de l'état de la session
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = ""
 
-# Fonctions d'analyse
-def extract_clauses(text):
-    """Extrait les clauses du texte du bail"""
-    clauses = []
-    lines = text.split('\n')
-    current_clause = ""
-    current_text = ""
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Nouvelle clause (commence par •, -, ou un numéro)
-        if line.startswith('•') or line.startswith('-') or re.match(r'^\d+\.', line):
-            # Enregistrer la clause précédente si elle existe
-            if current_clause:
-                clauses.append({
-                    "title": current_clause,
-                    "text": current_text.strip()
-                })
-            
-            # Nouvelle clause
-            current_clause = re.sub(r'^[•\-\d\.]+\s*', '', line).strip()
-            current_text = ""
-        else:
-            # Suite de la clause courante
-            current_text += " " + line
-    
-    # Ajouter la dernière clause
-    if current_clause:
-        clauses.append({
-            "title": current_clause,
-            "text": current_text.strip()
-        })
-    
-    return clauses
+# Fonction pour initialiser le client OpenAI
+def get_openai_client():
+    api_key = st.session_state.api_key
+    if not api_key:
+        st.error("Clé API OpenAI non configurée. Veuillez la configurer dans les paramètres.")
+        return None
+    return OpenAI(api_key=api_key)
 
-def extract_charges(text):
-    """Extrait les charges du texte de la reddition"""
+# Extraction des charges avec regex (comme backup si GPT ne fonctionne pas)
+def extract_charges_fallback(text):
+    """Extrait les charges du texte de la reddition avec regex"""
     charges = []
     lines = text.split('\n')
     current_category = ""
@@ -158,149 +123,134 @@ def extract_charges(text):
     
     return charges
 
-def find_matching_clauses(charge, clauses):
-    """Trouve les clauses correspondant à une charge"""
-    # Extraire les mots-clés de la charge
-    charge_text = (charge["category"] + " " + charge["description"]).lower()
-    
-    # Tokeniser et filtrer les stopwords français
-    french_stopwords = set(stopwords.words('french'))
-    charge_tokens = [w for w in word_tokenize(charge_text, language='french') 
-                    if w.isalpha() and len(w) > 2 and w not in french_stopwords]
-    
-    matching_clauses = []
-    for clause in clauses:
-        clause_text = (clause["title"] + " " + clause["text"]).lower()
-        clause_tokens = [w for w in word_tokenize(clause_text, language='french') 
-                        if w.isalpha() and len(w) > 2 and w not in french_stopwords]
+# Appel à l'API OpenAI pour analyser les clauses et les charges
+def analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface=None):
+    """Analyse des charges et clauses avec GPT-4o-mini"""
+    try:
+        # Construction du prompt pour OpenAI
+        prompt = f"""
+        # Analyse de charges locatives
         
-        # Vérifier les correspondances de mots-clés
-        matches = set(charge_tokens) & set(clause_tokens)
-        if matches:
-            matching_clauses.append({
-                "clause": clause,
-                "match_score": len(matches) / len(set(charge_tokens)),
-                "matching_words": list(matches)
-            })
-    
-    # Trier par score de correspondance
-    return sorted(matching_clauses, key=lambda x: x["match_score"], reverse=True)
+        ## Contexte
+        Je dois analyser des charges locatives qui me sont refacturées par mon bailleur pour vérifier leur cohérence avec les clauses du bail. Il s'agit d'un bail {bail_type}.
 
-def analyze_charges(charges, clauses, surface=None, bail_type="commercial"):
-    """Analyse complète des charges"""
-    analysis_results = []
-    total_amount = sum(charge["amount"] for charge in charges)
-    
-    for charge in charges:
-        matching = find_matching_clauses(charge, clauses)
-        
-        result = {
-            "category": charge["category"],
-            "description": charge["description"],
-            "amount": charge["amount"],
-            "percentage": (charge["amount"] / total_amount * 100) if total_amount > 0 else 0,
-            "matching_clauses": matching,
-            "conformity": "conforme" if matching else "à vérifier",
-            "conformity_details": ""
-        }
-        
-        # Détails de conformité
-        if matching:
-            best_match = matching[0]
-            result["conformity_details"] = f"Correspond à la clause '{best_match['clause']['title']}' (score: {best_match['match_score']:.2f})"
-        else:
-            result["conformity_details"] = "Aucune clause du bail ne semble couvrir explicitement cette charge"
-        
-        # Vérifier si la charge est potentiellement contestable
-        result["contestable"] = is_charge_contestable(charge, total_amount, matching)
-        
-        analysis_results.append(result)
-    
-    # Analyse globale
-    global_analysis = {
-        "total_amount": total_amount,
-        "charge_per_sqm": total_amount / float(surface) if surface else None,
-        "conformity_rate": sum(1 for r in analysis_results if r["conformity"] == "conforme") / len(analysis_results) if analysis_results else 0,
-        "contestable_charges": [r for r in analysis_results if r["contestable"]],
-        "realism": "indéterminé"
-    }
-    
-    # Évaluer le réalisme des charges si la surface est fournie
-    if surface and float(surface) > 0:
-        charge_per_sqm = total_amount / float(surface)
-        ref = RATIOS_REFERENCE[bail_type]["charges/m²/an"]
-        
-        if charge_per_sqm < ref["min"]:
-            global_analysis["realism"] = "bas"
-            global_analysis["realism_details"] = f"Les charges ({charge_per_sqm:.2f}€/m²/an) sont inférieures à la fourchette habituelle ({ref['min']}-{ref['max']}€/m²/an)"
-        elif charge_per_sqm > ref["max"]:
-            global_analysis["realism"] = "élevé"
-            global_analysis["realism_details"] = f"Les charges ({charge_per_sqm:.2f}€/m²/an) sont supérieures à la fourchette habituelle ({ref['min']}-{ref['max']}€/m²/an)"
-        else:
-            global_analysis["realism"] = "normal"
-            global_analysis["realism_details"] = f"Les charges ({charge_per_sqm:.2f}€/m²/an) sont dans la fourchette habituelle ({ref['min']}-{ref['max']}€/m²/an)"
-    
-    return {
-        "charges_analysis": analysis_results,
-        "global_analysis": global_analysis
-    }
+        ## Référentiel
+        Pour un bail {bail_type}, les charges habituellement refacturables comprennent:
+        {', '.join(CHARGES_TYPES[bail_type])}
 
-def is_charge_contestable(charge, total_amount, matching_clauses):
-    """Détermine si une charge est potentiellement contestable"""
-    description = charge["description"].lower()
-    
-    # Pas de correspondance dans le bail
-    if not matching_clauses:
-        return True
-    
-    # Honoraires de gestion excessifs
-    if ("honoraire" in description or "gestion" in description) and charge["amount"] > total_amount * 0.1:
-        return True
-    
-    # Mots-clés suspects
-    suspicious_keywords = ["réparation", "remplacement", "installation", "amélioration", "travaux", "rénovation"]
-    if any(keyword in description for keyword in suspicious_keywords):
-        # Vérifier si la clause correspondante limite ce type de dépense
-        best_match = matching_clauses[0]["clause"]["text"].lower()
-        if "article 606" in best_match or "grosses réparations" in best_match:
-            return False
-        if any(keyword in description and keyword not in best_match for keyword in suspicious_keywords):
-            return True
-    
-    return False
+        Les charges souvent contestables comprennent:
+        {', '.join(CHARGES_CONTESTABLES)}
 
-def generate_recommendations(analysis):
-    """Génère des recommandations basées sur l'analyse"""
-    recommendations = []
-    
-    global_analysis = analysis["global_analysis"]
-    charges_analysis = analysis["charges_analysis"]
-    
-    # Recommandations basées sur la conformité
-    if global_analysis["conformity_rate"] < 0.8:
-        recommendations.append("Demander au bailleur un relevé détaillé justifiant la nature des charges qui ne correspondent pas clairement aux clauses du bail")
-    
-    # Recommandations basées sur les charges contestables
-    if global_analysis["contestable_charges"]:
-        recommendations.append("Demander des justificatifs détaillés pour les charges identifiées comme contestables")
+        ## Clauses du bail concernant les charges
+        ```
+        {bail_clauses}
+        ```
+
+        ## Détail des charges refacturées
+        ```
+        {charges_details}
+        ```
+
+        ## Surface locative
+        {surface if surface else "Non spécifiée"}
+
+        ## Tâche
+        1. Extraire et lister toutes les clauses contractuelles définissant les charges refacturables.
+        2. Extraire et lister toutes les charges refacturées avec leur montant.
+        3. Pour chaque charge, analyser sa conformité avec les clauses du bail.
+        4. Identifier les charges potentiellement contestables.
+        5. Calculer le total des charges et, si la surface est fournie, les charges au m².
+        6. Analyser le réalisme des charges par rapport aux références suivantes:
+           - Bail commercial: {RATIOS_REFERENCE['commercial']['charges/m²/an']['min']}-{RATIOS_REFERENCE['commercial']['charges/m²/an']['max']}€/m²/an
+           - Bail d'habitation: {RATIOS_REFERENCE['habitation']['charges/m²/an']['min']}-{RATIOS_REFERENCE['habitation']['charges/m²/an']['max']}€/m²/an
+        7. Formuler des recommandations.
+
+        ## Format de réponse
+        Réponds en JSON structuré comme ceci:
+        ```json
+        {{
+            "clauses_analysis": [
+                {{
+                    "title": "Titre de la clause",
+                    "text": "Texte de la clause"
+                }}
+            ],
+            "charges_analysis": [
+                {{
+                    "category": "Catégorie de la charge",
+                    "description": "Description de la charge",
+                    "amount": 1000.00,
+                    "percentage": 25.0,
+                    "conformity": "conforme|à vérifier",
+                    "conformity_details": "Détails sur la conformité",
+                    "matching_clause": "Titre de la clause correspondante ou null",
+                    "contestable": true|false,
+                    "contestable_reason": "Raison de la contestabilité ou null"
+                }}
+            ],
+            "global_analysis": {{
+                "total_amount": 4000.00,
+                "charge_per_sqm": 100.00,
+                "conformity_rate": 75.0,
+                "realism": "normal|bas|élevé",
+                "realism_details": "Détails sur le réalisme"
+            }},
+            "recommendations": [
+                "Recommandation 1",
+                "Recommandation 2"
+            ]
+        }}
+        ```
         
-        # Recommendations spécifiques par type de charge contestable
-        for charge in global_analysis["contestable_charges"]:
-            desc = charge["description"].lower()
-            if "honoraire" in desc or "gestion" in desc:
-                recommendations.append(f"Vérifier le taux des honoraires de gestion ({charge['percentage']:.1f}% du total) qui semblent élevés")
-            elif any(keyword in desc for keyword in ["travaux", "réparation", "remplacement"]):
-                recommendations.append("Vérifier que les travaux facturés ne relèvent pas de l'article 606 du Code civil (grosses réparations)")
+        NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
+        """
+
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return result
     
-    # Recommandations basées sur le réalisme
-    if global_analysis["realism"] == "élevé":
-        recommendations.append("Comparer vos charges avec des immeubles similaires pour vérifier si leur niveau est justifié")
-    
-    # Recommandations générales
-    recommendations.append("Exiger systématiquement des factures justificatives pour les charges importantes")
-    recommendations.append("Vérifier l'application correcte des clés de répartition définies dans le bail")
-    
-    return recommendations
+    except Exception as e:
+        st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
+        # Fallback avec analyse simple
+        try:
+            charges = extract_charges_fallback(charges_details)
+            total_amount = sum(charge["amount"] for charge in charges)
+            
+            return {
+                "clauses_analysis": [{"title": "Clause extraite manuellement", "text": clause.strip()} for clause in bail_clauses.split('\n') if clause.strip()],
+                "charges_analysis": [
+                    {
+                        "category": charge["category"],
+                        "description": charge["description"],
+                        "amount": charge["amount"],
+                        "percentage": (charge["amount"] / total_amount * 100) if total_amount > 0 else 0,
+                        "conformity": "à vérifier",
+                        "conformity_details": "Analyse de backup (OpenAI indisponible)",
+                        "matching_clause": None,
+                        "contestable": False,
+                        "contestable_reason": None
+                    } for charge in charges
+                ],
+                "global_analysis": {
+                    "total_amount": total_amount,
+                    "charge_per_sqm": total_amount / float(surface) if surface else None,
+                    "conformity_rate": 0,
+                    "realism": "indéterminé",
+                    "realism_details": "Analyse de backup (OpenAI indisponible)"
+                },
+                "recommendations": [
+                    "Vérifier manuellement la conformité des charges avec les clauses du bail",
+                    "Demander des justificatifs détaillés pour toutes les charges importantes"
+                ]
+            }
+        except Exception as fallback_error:
+            st.error(f"Erreur lors de l'analyse de backup: {str(fallback_error)}")
+            return None
 
 def plot_charges_breakdown(charges_analysis):
     """Crée un graphique de répartition des charges"""
@@ -308,13 +258,14 @@ def plot_charges_breakdown(charges_analysis):
         return None
     
     # Préparer les données
-    df = pd.DataFrame(charges_analysis)
+    descriptions = [c["description"] for c in charges_analysis]
+    amounts = [c["amount"] for c in charges_analysis]
     
     # Graphique camembert
     fig, ax = plt.subplots(figsize=(10, 6))
     wedges, texts, autotexts = ax.pie(
-        df['amount'], 
-        labels=df['description'], 
+        amounts, 
+        labels=descriptions, 
         autopct='%1.1f%%',
         textprops={'fontsize': 9}
     )
@@ -326,7 +277,7 @@ def plot_charges_breakdown(charges_analysis):
     # Ajouter une légende
     ax.legend(
         wedges, 
-        [f"{row['description']} ({row['amount']:.2f}€)" for _, row in df.iterrows()],
+        [f"{desc} ({amt:.2f}€)" for desc, amt in zip(descriptions, amounts)],
         title="Postes de charges",
         loc="center left",
         bbox_to_anchor=(1, 0, 0.5, 1),
@@ -338,49 +289,29 @@ def plot_charges_breakdown(charges_analysis):
     
     return fig
 
-def display_conformity_table(charges_analysis):
-    """Affiche un tableau des charges avec leur conformité"""
-    df = pd.DataFrame([
-        {
-            "Description": charge["description"],
-            "Montant (€)": charge["amount"],
-            "% du total": f"{charge['percentage']:.1f}%",
-            "Conformité": charge["conformity"],
-            "Détails": charge["conformity_details"],
-            "Contestable": "Oui" if charge["contestable"] else "Non"
-        }
-        for charge in charges_analysis
-    ])
-    
-    # Définir le style conditionnel
-    def highlight_conformity(val):
-        if val == "conforme":
-            return 'background-color: rgba(76, 175, 80, 0.2)'
-        elif val == "à vérifier":
-            return 'background-color: rgba(255, 152, 0, 0.2)'
-        return ''
-    
-    def highlight_contestable(val):
-        if val == "Oui":
-            return 'background-color: rgba(244, 67, 54, 0.2)'
-        return ''
-    
-    # Appliquer le style et afficher
-    styled_df = df.style.applymap(highlight_conformity, subset=['Conformité']) \
-                         .applymap(highlight_contestable, subset=['Contestable'])
-    
-    return styled_df
-
 # Interface utilisateur Streamlit
 def main():
-    st.title("Analyseur de Charges Locatives")
+    st.title("Analyseur de Charges Locatives avec GPT-4o-mini")
     st.markdown("""
-    Cet outil vous aide à analyser la cohérence entre les charges qui vous sont refacturées 
-    par votre bailleur et les clauses de votre contrat de bail.
+    Cet outil utilise l'IA de OpenAI (GPT-4o-mini) pour analyser la cohérence entre les charges 
+    qui vous sont refacturées par votre bailleur et les clauses de votre contrat de bail.
     """)
     
     # Sidebar pour la configuration
     st.sidebar.header("Configuration")
+    
+    # Configuration API OpenAI
+    with st.sidebar.expander("Configuration API OpenAI", expanded=False):
+        api_key = st.text_input(
+            "Clé API OpenAI", 
+            value=st.session_state.api_key,
+            type="password",
+            help="Votre clé API OpenAI (commence par 'sk-')"
+        )
+        st.session_state.api_key = api_key
+        
+        st.info("Vous pouvez obtenir une clé API sur [platform.openai.com](https://platform.openai.com/api-keys)")
+    
     bail_type = st.sidebar.selectbox(
         "Type de bail",
         options=["commercial", "habitation"],
@@ -434,20 +365,17 @@ def main():
     if submitted:
         if not bail_clauses or not charges_details:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
+        elif not st.session_state.api_key:
+            st.error("Veuillez configurer votre clé API OpenAI dans la barre latérale.")
         else:
-            with st.spinner("Analyse en cours..."):
-                # Extraire les données
-                clauses = extract_clauses(bail_clauses)
-                charges = extract_charges(charges_details)
-                
-                if not charges:
-                    st.error("Aucune charge n'a pu être extraite. Vérifiez le format des données.")
-                    return
-                
-                # Analyser les charges
-                analysis = analyze_charges(charges, clauses, surface, bail_type)
-                st.session_state.analysis = analysis
-                st.session_state.analysis_complete = True
+            with st.spinner("Analyse en cours avec GPT-4o-mini..."):
+                client = get_openai_client()
+                if client:
+                    # Analyser les charges avec OpenAI
+                    analysis = analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface)
+                    if analysis:
+                        st.session_state.analysis = analysis
+                        st.session_state.analysis_complete = True
     
     # Afficher les résultats
     if st.session_state.analysis_complete:
@@ -462,17 +390,21 @@ def main():
         with col1:
             st.metric("Montant total des charges", f"{global_analysis['total_amount']:.2f}€")
         with col2:
-            if global_analysis['charge_per_sqm']:
+            if global_analysis.get('charge_per_sqm'):
                 st.metric("Charges au m²/an", f"{global_analysis['charge_per_sqm']:.2f}€")
         with col3:
-            st.metric("Taux de conformité", f"{global_analysis['conformity_rate']*100:.0f}%")
+            st.metric("Taux de conformité", f"{global_analysis['conformity_rate']:.0f}%")
         
         # Alerte sur le réalisme
-        if global_analysis['realism'] != "indéterminé":
+        if global_analysis.get('realism') != "indéterminé":
             color_map = {"normal": "success", "bas": "info", "élevé": "warning"}
-            st.success(global_analysis['realism_details']) if global_analysis['realism'] == "normal" else \
-            st.info(global_analysis['realism_details']) if global_analysis['realism'] == "bas" else \
-            st.warning(global_analysis['realism_details'])
+            alert_type = color_map.get(global_analysis.get('realism'), "info")
+            if alert_type == "success":
+                st.success(global_analysis['realism_details'])
+            elif alert_type == "info":
+                st.info(global_analysis['realism_details'])
+            else:
+                st.warning(global_analysis['realism_details'])
         
         # Visualisation graphique
         st.subheader("Répartition des charges")
@@ -482,39 +414,70 @@ def main():
         
         # Tableau d'analyse détaillée
         st.subheader("Analyse détaillée des charges")
-        st.dataframe(display_conformity_table(charges_analysis))
+        
+        # Créer DataFrame pour affichage
+        df = pd.DataFrame([
+            {
+                "Description": charge["description"],
+                "Montant (€)": charge["amount"],
+                "% du total": f"{charge['percentage']:.1f}%",
+                "Conformité": charge["conformity"],
+                "Détails": charge["conformity_details"],
+                "Contestable": "Oui" if charge["contestable"] else "Non"
+            }
+            for charge in charges_analysis
+        ])
+        
+        # Définir le style conditionnel
+        def highlight_conformity(val):
+            if val == "conforme":
+                return 'background-color: rgba(76, 175, 80, 0.2)'
+            elif val == "à vérifier":
+                return 'background-color: rgba(255, 152, 0, 0.2)'
+            return ''
+        
+        def highlight_contestable(val):
+            if val == "Oui":
+                return 'background-color: rgba(244, 67, 54, 0.2)'
+            return ''
+        
+        # Appliquer le style et afficher
+        styled_df = df.style.applymap(highlight_conformity, subset=['Conformité']) \
+                            .applymap(highlight_contestable, subset=['Contestable'])
+        
+        st.dataframe(styled_df)
         
         # Charges contestables
-        if global_analysis["contestable_charges"]:
+        contestable_charges = [c for c in charges_analysis if c.get("contestable")]
+        if contestable_charges:
             st.subheader("Charges potentiellement contestables")
-            for i, charge in enumerate(global_analysis["contestable_charges"]):
+            for i, charge in enumerate(contestable_charges):
                 with st.expander(f"{charge['description']} ({charge['amount']:.2f}€)"):
                     st.markdown(f"**Montant:** {charge['amount']:.2f}€ ({charge['percentage']:.1f}% du total)")
-                    st.markdown(f"**Raison:** {charge['conformity_details']}")
                     
-                    if charge["matching_clauses"]:
-                        best_match = charge["matching_clauses"][0]
+                    if "contestable_reason" in charge and charge["contestable_reason"]:
+                        st.markdown(f"**Raison:** {charge['contestable_reason']}")
+                    else:
+                        st.markdown(f"**Raison:** {charge['conformity_details']}")
+                    
+                    if "matching_clause" in charge and charge["matching_clause"]:
                         st.markdown(f"""
-                        **Meilleure correspondance avec le bail:**
-                        >{best_match['clause']['title']}
-                        
-                        >*{best_match['clause']['text']}*
-                        
-                        **Mots-clés communs:** {', '.join(best_match['matching_words'])}
+                        **Clause correspondante dans le bail:**
+                        >{charge['matching_clause']}
                         """)
         
         # Recommandations
         st.subheader("Recommandations")
-        recommendations = generate_recommendations(analysis)
+        recommendations = analysis["recommendations"]
         for i, rec in enumerate(recommendations):
             st.markdown(f"{i+1}. {rec}")
         
         # Export des résultats
         st.download_button(
-            label="Télécharger l'analyse complète (CSV)",
-            data=pd.DataFrame(charges_analysis).to_csv(index=False).encode('utf-8'),
-            file_name='analyse_charges.csv',
-            mime='text/csv',
+            label="Télécharger l'analyse complète (JSON)",
+            data=json.dumps(analysis, indent=2, ensure_ascii=False).encode('utf-8'),
+            file_name='analyse_charges.json',
+            mime='application/json',
         )
 
 if __name__ == "__main__":
