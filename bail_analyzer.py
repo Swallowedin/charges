@@ -713,131 +713,6 @@ def generate_recommendations(analyzed_charges: List[Dict[str, Any]], global_anal
     
     return recommendations
 
-def analyze_charges_with_deterministic_approach(bail_clauses: str, charges_details: str, bail_type: str, surface: Optional[float] = None) -> Dict[str, Any]:
-    """
-    Analyse les charges avec une approche déterministe pour garantir des résultats cohérents.
-    """
-    # 1. Extraire les sections pertinentes du bail
-    relevant_bail_text = extract_relevant_sections(bail_clauses)
-    
-    # 2. Extraire les charges du document de reddition
-    extracted_charges = extract_charges_from_document(charges_details)
-    
-    # 3. Analyser la conformité des charges
-    analyzed_charges = analyze_charges_conformity(extracted_charges, relevant_bail_text)
-    
-    # 4. Générer l'analyse globale
-    global_analysis = generate_global_analysis(analyzed_charges, bail_type, surface)
-    
-    # 5. Générer des recommandations
-    recommendations = generate_recommendations(analyzed_charges, global_analysis, relevant_bail_text)
-    
-    # 6. Identifier les clauses pertinentes pour l'analyse
-    clauses_analysis = extract_clauses_analysis(relevant_bail_text)
-    
-    # Construire le résultat final avec le format attendu par l'interface
-    result = {
-        "clauses_analysis": clauses_analysis,
-        "charges_analysis": analyzed_charges,
-        "global_analysis": global_analysis,
-        "recommendations": recommendations,
-        "extracted_sections": {
-            "original_length": len(bail_clauses),
-            "extracted_length": len(relevant_bail_text),
-            "reduction_percent": round(100 - (len(relevant_bail_text) / len(bail_clauses) * 100), 1) if bail_clauses else 0
-        }
-    }
-    
-    return result
-
-def extract_clauses_analysis(bail_text: str) -> List[Dict[str, str]]:
-    """
-    Extrait et structure les clauses du bail pour l'analyse.
-    """
-    clauses = []
-    
-    # Diviser en paragraphes significatifs
-    paragraphs = re.split(r'\n\s*\n|\r\n\s*\r\n', bail_text)
-    
-    for paragraph in paragraphs:
-        if not paragraph.strip():
-            continue
-            
-        # Essayer d'identifier un titre
-        title_match = re.search(r'(?i)^(article|chapitre|section|§)\s+\w+\s*[.:-]?\s*([^\n]+)', paragraph)
-        
-        if title_match:
-            title = title_match.group(0).strip()
-            text = paragraph[len(title_match.group(0)):].strip()
-            
-            clauses.append({
-                "title": title,
-                "text": text if text else paragraph
-            })
-        else:
-            # Chercher d'autres formes de titres
-            match = re.search(r'^([A-Z][^.]+)[.:]', paragraph)
-            if match:
-                title = match.group(1).strip()
-                text = paragraph[len(match.group(0)):].strip()
-                
-                clauses.append({
-                    "title": title,
-                    "text": text if text else paragraph
-                })
-            else:
-                # Pas de titre identifiable, utiliser les premiers mots
-                words = paragraph.split()
-                title = ' '.join(words[:min(5, len(words))]) + "..."
-                
-                clauses.append({
-                    "title": title,
-                    "text": paragraph
-                })
-    
-    return clauses
-
-def validate_and_normalize_results(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Vérifie et normalise les résultats pour garantir la cohérence 
-    et la reproductibilité de l'analyse.
-    """
-    if not result or "charges_analysis" not in result:
-        return None
-    
-    charges = result["charges_analysis"]
-    
-    # Recalculer les montants totaux
-    total_amount = sum(charge["amount"] for charge in charges)
-    total_amount = round(total_amount, 2)  # Arrondir à 2 décimales pour cohérence
-    
-    # Normaliser et recalculer les pourcentages pour chaque charge
-    for charge in charges:
-        # Normaliser les montants à 2 décimales
-        charge["amount"] = round(charge["amount"], 2)
-        # Recalculer les pourcentages avec une précision fixe
-        charge["percentage"] = round((charge["amount"] / total_amount * 100), 1) if total_amount > 0 else 0
-    
-    # Recalculer l'analyse globale
-    contestable_charges = [c for c in charges if c.get("contestable", False)]
-    contestable_amount = sum(c["amount"] for c in contestable_charges)
-    contestable_amount = round(contestable_amount, 2)
-    
-    conforming_charges = [c for c in charges if c["conformity"] == "conforme"]
-    conformity_rate = (len(conforming_charges) / len(charges) * 100) if charges else 0
-    
-    result["global_analysis"]["total_amount"] = total_amount
-    result["global_analysis"]["contestable_amount"] = contestable_amount
-    result["global_analysis"]["contestable_percentage"] = round((contestable_amount / total_amount * 100), 1) if total_amount > 0 else 0
-    result["global_analysis"]["conformity_rate"] = round(conformity_rate, 1)
-    
-    # Vérifier que toutes les charges ont des catégories standard
-    categories = [cat.name for cat in COMMERCIAL_CHARGES]
-    for charge in charges:
-        if charge["category"] not in categories:
-            charge["category"] = "SERVICES DIVERS"  # Catégorie par défaut
-    
-    return result
 
 def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
     """
@@ -861,24 +736,6 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         # Afficher un aperçu des sections extraites
         with st.expander("Aperçu des sections pertinentes extraites"):
             st.text(relevant_bail_text[:1000] + "..." if len(relevant_bail_text) > 1000 else relevant_bail_text)
-        
-        # Lancer l'analyse déterministe
-        start_time = time.time()
-        
-        # ÉTAPE 1: Analyser avec l'approche déterministe
-        deterministic_result = analyze_charges_with_deterministic_approach(bail_clauses, charges_details, bail_type, surface)
-        deterministic_result = validate_and_normalize_results(deterministic_result)
-        
-        # Mesurer le temps d'exécution
-        execution_time = time.time() - start_time
-        st.success(f"✅ Analyse déterministe terminée en {execution_time:.2f} secondes")
-        
-        # Vérifier si les résultats déterministes sont suffisants
-        if deterministic_result and len(deterministic_result["charges_analysis"]) > 0:
-            return deterministic_result
-        
-        # ÉTAPE 2: Si l'analyse déterministe échoue ou identifie trop peu de charges, utiliser OpenAI
-        st.warning("⚠️ L'analyse déterministe n'a pas identifié suffisamment de charges. Tentative avec GPT-4o-mini...")
         
         # Préparation du prompt OpenAI
         prompt = f"""
@@ -930,116 +787,7 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
             result = json.loads(response.choices[0].message.content)
             st.success("✅ Analyse complémentaire réalisée avec gpt-4o-mini")
             
-            # Fusionner les résultats si l'analyse déterministe avait trouvé quelque chose
-            if deterministic_result and len(deterministic_result["charges_analysis"]) > 0:
-                # Garder les charges identifiées par l'approche déterministe
-                openai_charges = {c["description"].lower(): c for c in result["charges_analysis"]}
-                for charge in deterministic_result["charges_analysis"]:
-                    if charge["description"].lower() not in openai_charges:
-                        result["charges_analysis"].append(charge)
-                
-                # Récalculer les pourcentages et totaux
-                result = validate_and_normalize_results(result)
-                
-                st.info("🔄 Résultats de l'analyse déterministe et de l'analyse GPT fusionnés")
-            
             return result
-            
-        except Exception as e:
-            st.warning(f"⚠️ Erreur avec gpt-4o-mini: {str(e)}. Tentative avec gpt-3.5-turbo...")
-            
-            # Si échec, basculer vers gpt-3.5-turbo
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0,  # Température 0 pour maximiser la cohérence
-                    response_format={"type": "json_object"}  # Forcer une réponse JSON
-                )
-                
-                result = json.loads(response.choices[0].message.content)
-                st.success("✅ Analyse complémentaire réalisée avec gpt-3.5-turbo")
-                
-                # Fusionner aussi ici si nécessaire
-                if deterministic_result and len(deterministic_result["charges_analysis"]) > 0:
-                    openai_charges = {c["description"].lower(): c for c in result["charges_analysis"]}
-                    for charge in deterministic_result["charges_analysis"]:
-                        if charge["description"].lower() not in openai_charges:
-                            result["charges_analysis"].append(charge)
-                    
-                    result = validate_and_normalize_results(result)
-                    st.info("🔄 Résultats de l'analyse déterministe et de l'analyse GPT fusionnés")
-                
-                return result
-                
-            except Exception as e2:
-                st.error(f"❌ Erreur avec gpt-3.5-turbo: {str(e2)}. Utilisation des résultats de l'analyse déterministe uniquement.")
-                
-                # Si l'approche OpenAI échoue complètement, retourner les résultats déterministes
-                if deterministic_result:
-                    return deterministic_result
-                else:
-                    # Fallback absolu en cas d'échec total
-                    return fallback_analysis(bail_clauses, charges_details, bail_type, surface)
-
-    except Exception as e:
-        st.error(f"❌ Erreur lors de l'analyse: {str(e)}")
-        return fallback_analysis(bail_clauses, charges_details, bail_type, surface)
-
-def fallback_analysis(bail_clauses, charges_details, bail_type, surface=None):
-    """
-    Analyse de secours simplifiée en cas d'échec des méthodes principales.
-    """
-    try:
-        charges = extract_charges_fallback(charges_details)
-        total_amount = sum(charge["amount"] for charge in charges)
-
-        return {
-            "clauses_analysis": [{"title": "Clause extraite manuellement", "text": clause.strip()} for clause in bail_clauses.split('\n') if clause.strip()],
-            "charges_analysis": [
-                {
-                    "category": charge["category"] if charge["category"] else "SERVICES DIVERS",
-                    "description": charge["description"],
-                    "amount": charge["amount"],
-                    "percentage": (charge["amount"] / total_amount * 100) if total_amount > 0 else 0,
-                    "conformity": "à vérifier",
-                    "conformity_details": "Analyse de secours (méthodes principales indisponibles)",
-                    "matching_clause": None,
-                    "contestable": False,
-                    "contestable_reason": None
-                } for charge in charges
-            ],
-            "global_analysis": {
-                "total_amount": total_amount,
-                "charge_per_sqm": total_amount / float(surface) if surface and surface.replace('.', '').isdigit() else None,
-                "conformity_rate": 0,
-                "realism": "indéterminé",
-                "realism_details": "Analyse de secours (méthodes principales indisponibles)"
-            },
-            "recommendations": [
-                "Vérifier manuellement la conformité des charges avec les clauses du bail",
-                "Demander des justificatifs détaillés pour toutes les charges importantes"
-            ]
-        }
-    except Exception as fallback_error:
-        st.error(f"❌ Erreur lors de l'analyse de secours: {str(fallback_error)}")
-        # Retour minimal en cas d'échec total
-        return {
-            "clauses_analysis": [],
-            "charges_analysis": [],
-            "global_analysis": {
-                "total_amount": 0,
-                "conformity_rate": 0,
-                "realism": "indéterminé",
-                "realism_details": "Analyse impossible"
-            },
-            "recommendations": [
-                "L'analyse automatique a échoué. Veuillez vérifier le format de vos documents.",
-                "Essayez de copier-coller directement le texte plutôt que d'utiliser des fichiers."
-            ]
-        }
-
-# ---- MODIFICATION DE LA FONCTION MAIN POUR INTÉGRER L'APPROCHE DÉTERMINISTE ----
 
 def main():
     st.title("Analyseur de Charges Locatives")
@@ -1152,13 +900,6 @@ def main():
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
         else:
             with st.spinner("Analyse en cours..."):
-                if not use_openai:
-                    # Utiliser uniquement l'analyse déterministe
-                    analysis = analyze_charges_with_deterministic_approach(bail_clauses_manual, charges_details_manual, bail_type, surface)
-                    analysis = validate_and_normalize_results(analysis)
-                    st.success("✅ Analyse déterministe terminée avec succès")
-                else:
-                    # Utiliser l'analyse combinée (déterministe + IA)
                     analysis = analyze_with_openai(bail_clauses_manual, charges_details_manual, bail_type, surface)
                 
                 if analysis:
@@ -1189,13 +930,6 @@ def main():
                         st.text(charges_details_combined[:2000] + "..." if len(charges_details_combined) > 2000 else charges_details_combined)
 
                     # Analyser les charges avec l'approche appropriée
-                    if not use_openai:
-                        # Utiliser uniquement l'analyse déterministe
-                        analysis = analyze_charges_with_deterministic_approach(bail_clauses_combined, charges_details_combined, bail_type, surface)
-                        analysis = validate_and_normalize_results(analysis)
-                        st.success("✅ Analyse déterministe terminée avec succès")
-                    else:
-                        # Utiliser l'analyse combinée (déterministe + IA)
                         analysis = analyze_with_openai(bail_clauses_combined, charges_details_combined, bail_type, surface)
                     
                     if analysis:
