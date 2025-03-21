@@ -228,21 +228,121 @@ def extract_charges_fallback(text):
     
     return charges
 
+def extract_relevant_sections(bail_text):
+    """
+    Extrait les sections pertinentes d'un bail volumineux en se concentrant sur les clauses liées aux charges.
+    """
+    # Mots-clés pour identifier les sections relatives aux charges
+    keywords = [
+        "charges", "charges locatives", "charges récupérables", 
+        "dépenses communes", "charges communes", "répartition des charges",
+        "provision", "régularisation", "article 606", "article 605",
+        "frais", "honoraires", "dépenses", "refacturation", 
+        "parties communes", "loyer et charges", "reddition", "décompte"
+    ]
+    
+    # Identifier les titres potentiels des sections
+    title_patterns = [
+        r"(?i)article\s+\d+\s*[:-]?\s*(.*charges.*|.*récupéra.*|.*dépenses.*)",
+        r"(?i)chapitre\s+\d+\s*[:-]?\s*(.*charges.*|.*récupéra.*|.*dépenses.*)",
+        r"(?i)section\s+\d+\s*[:-]?\s*(.*charges.*|.*récupéra.*|.*dépenses.*)",
+        r"(?i)(charges|frais|dépenses)\s+\w+",
+        r"(?i)répartition\s+des\s+(charges|frais|dépenses)",
+        r"(?i)(provision|régularisation)\s+\w+"
+    ]
+    
+    # Diviser le texte en lignes
+    lines = bail_text.split('\n')
+    
+    # Extraire les sections pertinentes
+    relevant_sections = []
+    current_section = []
+    in_relevant_section = False
+    
+    for line in lines:
+        line_lower = line.lower()
+        
+        # Déterminer si cette ligne marque le début d'une section pertinente
+        is_start_of_relevant_section = False
+        
+        # Vérifier si la ligne contient un mot-clé
+        if any(keyword in line_lower for keyword in keywords):
+            is_start_of_relevant_section = True
+        
+        # Vérifier si la ligne correspond à un pattern de titre
+        for pattern in title_patterns:
+            if re.search(pattern, line):
+                is_start_of_relevant_section = True
+                break
+        
+        # Traiter la ligne selon son contexte
+        if is_start_of_relevant_section:
+            # Si on était déjà dans une section pertinente, sauvegarder la section précédente
+            if in_relevant_section and current_section:
+                relevant_sections.append('\n'.join(current_section))
+                current_section = []
+            
+            # Commencer une nouvelle section
+            in_relevant_section = True
+            current_section.append(line)
+            
+            # Récupérer également un certain nombre de lignes suivantes (contexte)
+            lines_to_capture = 20  # Nombre de lignes à capturer après un mot-clé
+            
+        elif in_relevant_section:
+            current_section.append(line)
+            
+            # Après avoir capturé assez de lignes, vérifier si on continue
+            if len(current_section) > lines_to_capture:
+                # Si on trouve un nouveau titre ou une ligne vide, terminer la section
+                if re.match(r"(?i)^(article|chapitre|section)\s+\d+", line) or line.strip() == "":
+                    in_relevant_section = False
+                    relevant_sections.append('\n'.join(current_section))
+                    current_section = []
+    
+    # Ne pas oublier la dernière section
+    if in_relevant_section and current_section:
+        relevant_sections.append('\n'.join(current_section))
+    
+    # Combiner toutes les sections pertinentes en un seul texte
+    extracted_text = "\n\n".join(relevant_sections)
+    
+    return extracted_text
+
 def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
-    """Analyse des charges et clauses avec le modèle GPT"""
+    """
+    Version optimisée pour analyser efficacement de grands documents de bail
+    en extrayant d'abord les sections pertinentes.
+    """
     try:
+        # Extraire les sections pertinentes du bail au lieu d'utiliser le document complet
+        relevant_bail_text = extract_relevant_sections(bail_clauses)
+        
+        # Informer l'utilisateur de l'optimisation
+        original_length = len(bail_clauses)
+        extracted_length = len(relevant_bail_text)
+        reduction_percent = round(100 - (extracted_length / original_length * 100), 1)
+        
+        st.info(f"🔍 Optimisation du bail : {original_length:,} caractères → {extracted_length:,} caractères ({reduction_percent}% de réduction)")
+        
+        # Afficher un aperçu des sections extraites
+        with st.expander("Aperçu des sections pertinentes extraites"):
+            st.text(relevant_bail_text[:1000] + "..." if len(relevant_bail_text) > 1000 else relevant_bail_text)
+        
+        # Maintenant utiliser l'analyse OpenAI avec le texte extrait
         prompt = f"""
         # Analyse de charges locatives
         
         ## Contexte
         Bail {bail_type}, analyse des charges refacturées vs clauses du bail.
+        IMPORTANT: Le texte du bail a été extrait pour se concentrer sur les clauses pertinentes liées aux charges.
 
         ## Référentiel
         Charges habituellement refacturables: {', '.join(CHARGES_TYPES[bail_type])}
         Charges contestables: {', '.join(CHARGES_CONTESTABLES)}
 
-        ## Clauses du bail
-        {bail_clauses}
+        ## Clauses du bail (sections pertinentes)
+        {relevant_bail_text}
 
         ## Charges refacturées
         {charges_details}
@@ -266,27 +366,35 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         }}
         """
 
-        # Utiliser gpt-4o-mini avec response_format pour garantir un JSON valide
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            response_format={"type": "json_object"}  # Forcer une réponse JSON
-        )
-
-        # Récupérer le contenu de la réponse
-        result = json.loads(response.choices[0].message.content)
+        # Essayer d'abord avec gpt-4o-mini
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                response_format={"type": "json_object"}  # Forcer une réponse JSON
+            )
+            result = json.loads(response.choices[0].message.content)
+            st.success("Analyse réalisée avec gpt-4o-mini")
+            
+        except Exception as e:
+            st.warning(f"Erreur avec gpt-4o-mini: {str(e)}. Tentative avec gpt-3.5-turbo...")
+            
+            # Si échec, basculer vers gpt-3.5-turbo
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                response_format={"type": "json_object"}  # Forcer une réponse JSON
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            st.success("Analyse réalisée avec gpt-3.5-turbo")
+        
         return result
 
     except Exception as e:
         st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
-        
-        # Afficher des détails supplémentaires pour le débogage
-        if 'response' in locals() and hasattr(response, 'choices') and len(response.choices) > 0:
-            st.write("Début de la réponse reçue:")
-            content = response.choices[0].message.content
-            st.code(content[:200] + "..." if len(content) > 200 else content)
-        
         # Fallback avec analyse simple
         try:
             charges = extract_charges_fallback(charges_details)
@@ -464,7 +572,7 @@ def main():
         if not bail_clauses_manual or not charges_details_manual:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
         else:
-            with st.spinner("Analyse en cours avec GPT-4o-mini..."):
+            with st.spinner("Analyse en cours..."):
                 # Analyser les charges avec OpenAI
                 analysis = analyze_with_openai(bail_clauses_manual, charges_details_manual, bail_type, surface)
                 if analysis:
