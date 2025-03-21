@@ -5,7 +5,7 @@ import json
 import re
 import io
 import base64
-import openai  # Corrigé pour être en minuscules
+from openai import OpenAI
 from PIL import Image
 import PyPDF2
 import docx2txt
@@ -80,11 +80,7 @@ if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
 # Configuration de l'API OpenAI
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY n'est pas défini dans les variables d'environnement")
-
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Fonction pour extraire le texte d'une image avec OCR
 def extract_text_from_image(uploaded_file):
@@ -228,7 +224,6 @@ def extract_charges_fallback(text):
     
     return charges
 
-# Update the analyze_with_openai function to use the new OpenAI client syntax
 def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
     """Analyse des charges et clauses avec le modèle GPT"""
     try:
@@ -269,8 +264,8 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
         """
 
-        # Utilisation du nouveau client OpenAI
-        response = openai.chat.completions.create(
+        # Utilisation du client OpenAI correctement initialisé
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",  # ou "gpt-4o-mini" selon celui que vous voulez utiliser
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
