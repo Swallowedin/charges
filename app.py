@@ -71,14 +71,19 @@ RATIOS_REFERENCE = {
 # Initialisation de l'état de la session
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
+
+# Récupération de la clé API depuis les secrets de Streamlit Cloud
 if 'api_key' not in st.session_state:
-    st.session_state.api_key = ""
+    try:
+        st.session_state.api_key = st.secrets["openai"]["api_key"]
+    except:
+        st.session_state.api_key = ""
 
 # Fonction pour initialiser le client OpenAI
 def get_openai_client():
     api_key = st.session_state.api_key
     if not api_key:
-        st.error("Clé API OpenAI non configurée. Veuillez la configurer dans les paramètres.")
+        st.error("Clé API OpenAI non configurée. Veuillez configurer les secrets dans Streamlit Cloud.")
         return None
     return OpenAI(api_key=api_key)
 
@@ -300,17 +305,25 @@ def main():
     # Sidebar pour la configuration
     st.sidebar.header("Configuration")
     
-    # Configuration API OpenAI
-    with st.sidebar.expander("Configuration API OpenAI", expanded=False):
-        api_key = st.text_input(
-            "Clé API OpenAI", 
-            value=st.session_state.api_key,
-            type="password",
-            help="Votre clé API OpenAI (commence par 'sk-')"
-        )
-        st.session_state.api_key = api_key
+    # Affichage du statut de la clé API dans la sidebar
+    if st.session_state.api_key:
+        st.sidebar.success("✅ Clé API OpenAI configurée via les secrets Streamlit")
+    else:
+        st.sidebar.error("❌ Clé API OpenAI non configurée. Ajoutez-la dans les secrets Streamlit Cloud.")
+        st.sidebar.info("Dans votre app Streamlit Cloud: Paramètres → Secrets → Ajoutez:\n```\n[openai]\napi_key = \"sk-votreclé...\"\n```")
         
-        st.info("Vous pouvez obtenir une clé API sur [platform.openai.com](https://platform.openai.com/api-keys)")
+        # Offrir une option de secours pour entrer la clé manuellement
+        with st.sidebar.expander("Ou entrez votre clé API manuellement", expanded=False):
+            api_key = st.text_input(
+                "Clé API OpenAI", 
+                value="",
+                type="password",
+                help="Votre clé API OpenAI (commence par 'sk-')"
+            )
+            if api_key:
+                st.session_state.api_key = api_key
+                st.success("Clé API enregistrée pour cette session")
+                st.info("Pour une solution permanente, configurez les secrets dans Streamlit Cloud")
     
     bail_type = st.sidebar.selectbox(
         "Type de bail",
@@ -366,7 +379,7 @@ def main():
         if not bail_clauses or not charges_details:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
         elif not st.session_state.api_key:
-            st.error("Veuillez configurer votre clé API OpenAI dans la barre latérale.")
+            st.error("Clé API OpenAI non configurée. Veuillez configurer les secrets dans Streamlit Cloud ou entrer une clé manuellement.")
         else:
             with st.spinner("Analyse en cours avec GPT-4o-mini..."):
                 client = get_openai_client()
