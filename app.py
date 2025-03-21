@@ -5,7 +5,7 @@ import json
 import re
 import io
 import base64
-import openai
+import openai  # Corrigé pour être en minuscules
 from PIL import Image
 import PyPDF2
 import docx2txt
@@ -94,14 +94,14 @@ def extract_text_from_image(uploaded_file):
         image_bytes = uploaded_file.getvalue()
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
+        
         # Prétraitement de l'image pour améliorer l'OCR
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
+        
         # Appliquer l'OCR
         text = pytesseract.image_to_string(thresh, lang='fra')
-
+        
         return text
     except Exception as e:
         st.error(f"Erreur lors de l'extraction du texte de l'image: {str(e)}")
@@ -260,7 +260,7 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
 
         ## Format JSON
         {"clauses_analysis":[{"title":"","text":""}],"charges_analysis":[{"category":"","description":"","amount":0,"percentage":0,"conformity":"conforme|à vérifier","conformity_details":"","matching_clause":"","contestable":true|false,"contestable_reason":""}],"global_analysis":{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""},"recommendations":[""]}
-
+        
         NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
         """
 
@@ -315,11 +315,11 @@ def plot_charges_breakdown(charges_analysis):
     """Crée un graphique de répartition des charges"""
     if not charges_analysis:
         return None
-    
+
     # Préparer les données
     descriptions = [c["description"] for c in charges_analysis]
     amounts = [c["amount"] for c in charges_analysis]
-    
+
     # Graphique camembert
     fig, ax = plt.subplots(figsize=(10, 6))
     wedges, texts, autotexts = ax.pie(
@@ -328,11 +328,11 @@ def plot_charges_breakdown(charges_analysis):
         autopct='%1.1f%%',
         textprops={'fontsize': 9}
     )
-    
+
     # Ajuster les propriétés du texte
     plt.setp(autotexts, size=8, weight='bold')
     plt.setp(texts, size=8)
-    
+
     # Ajouter une légende
     ax.legend(
         wedges, 
@@ -342,7 +342,7 @@ def plot_charges_breakdown(charges_analysis):
         bbox_to_anchor=(1, 0, 0.5, 1),
         fontsize=8
     )
-    
+
     plt.title('Répartition des charges locatives')
     plt.tight_layout()
     
@@ -355,29 +355,29 @@ def main():
     Cet outil analyse la cohérence entre les charges refacturées par votre bailleur 
     et les clauses de votre contrat de bail en utilisant GPT-4o-mini.
     """)
-    
+
     # Sidebar pour la configuration
     st.sidebar.header("Configuration")
-    
+
     bail_type = st.sidebar.selectbox(
         "Type de bail",
         options=["commercial", "habitation"],
         index=0
     )
-    
+
     surface = st.sidebar.text_input(
         "Surface locative (m²)",
         help="Utilisé pour calculer le ratio de charges au m²"
     )
-    
+
     # Interface principale avec onglets
     tab1, tab2 = st.tabs(["Saisie manuelle", "Téléchargement de fichiers"])
-    
+
     # Onglet 1: Saisie manuelle
     with tab1:
         with st.form("input_form_manual"):
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 st.subheader("Clauses du bail concernant les charges")
                 bail_clauses_manual = st.text_area(
@@ -385,7 +385,7 @@ def main():
                     height=250,
                     help="Utilisez un format avec une clause par ligne, commençant par •, - ou un numéro"
                 )
-            
+
             with col2:
                 st.subheader("Détail des charges refacturées")
                 charges_details_manual = st.text_area(
@@ -393,19 +393,19 @@ def main():
                     height=250,
                     help="Format recommandé: une charge par ligne avec le montant en euros (ex: 'Nettoyage: 1200€')"
                 )
-            
+
             specific_questions = st.text_area(
                 "Questions spécifiques (facultatif)",
                 help="Avez-vous des questions particulières concernant certaines charges?"
             )
-            
+
             submitted_manual = st.form_submit_button("Analyser les charges")
-    
+
     # Onglet 2: Téléchargement de fichiers
     with tab2:
         with st.form("input_form_files"):
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 st.subheader("Documents du bail")
                 bail_files = st.file_uploader(
@@ -414,7 +414,7 @@ def main():
                     accept_multiple_files=True,
                     help="Téléchargez un ou plusieurs documents contenant les clauses du bail"
                 )
-                
+
                 if bail_files:
                     st.write(f"{len(bail_files)} fichier(s) téléchargé(s) pour le bail")
                     with st.expander("Aperçu des fichiers du bail"):
@@ -422,7 +422,7 @@ def main():
                             st.write(f"**{file.name}**")
                             display_file_preview(file)
                             st.markdown("---")
-            
+
             with col2:
                 st.subheader("Documents des charges")
                 charges_files = st.file_uploader(
@@ -431,7 +431,7 @@ def main():
                     accept_multiple_files=True,
                     help="Téléchargez un ou plusieurs documents contenant le détail des charges"
                 )
-                
+
                 if charges_files:
                     st.write(f"{len(charges_files)} fichier(s) téléchargé(s) pour les charges")
                     with st.expander("Aperçu des fichiers des charges"):
@@ -439,28 +439,26 @@ def main():
                             st.write(f"**{file.name}**")
                             display_file_preview(file)
                             st.markdown("---")
-            
+
             specific_questions_file = st.text_area(
                 "Questions spécifiques (facultatif)",
                 help="Avez-vous des questions particulières concernant certaines charges?"
             )
-            
+
             submitted_files = st.form_submit_button("Analyser les fichiers")
-    
+
     # Traitement du formulaire de saisie manuelle
     if submitted_manual:
         if not bail_clauses_manual or not charges_details_manual:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
         else:
             with st.spinner("Analyse en cours avec GPT-4o-mini..."):
-                client = get_openai_client()
-                if client:
-                    # Analyser les charges avec OpenAI
-                    analysis = analyze_with_openai(client, bail_clauses_manual, charges_details_manual, bail_type, surface)
-                    if analysis:
-                        st.session_state.analysis = analysis
-                        st.session_state.analysis_complete = True
-    
+                # Analyser les charges avec OpenAI
+                analysis = analyze_with_openai(bail_clauses_manual, charges_details_manual, bail_type, surface)
+                if analysis:
+                    st.session_state.analysis = analysis
+                    st.session_state.analysis_complete = True
+
     # Traitement du formulaire de téléchargement de fichiers
     if submitted_files:
         if not bail_files or not charges_files:
@@ -470,33 +468,31 @@ def main():
                 # Extraire et combiner le texte de tous les fichiers
                 bail_clauses_combined = process_multiple_files(bail_files)
                 charges_details_combined = process_multiple_files(charges_files)
-                
+
                 if not bail_clauses_combined or not charges_details_combined:
                     st.error("Impossible d'extraire le texte des fichiers téléchargés.")
                 else:
                     # Afficher le texte extrait pour vérification
                     with st.expander("Texte extrait du bail"):
                         st.text(bail_clauses_combined[:2000] + "..." if len(bail_clauses_combined) > 2000 else bail_clauses_combined)
-                    
+
                     with st.expander("Texte extrait des charges"):
                         st.text(charges_details_combined[:2000] + "..." if len(charges_details_combined) > 2000 else charges_details_combined)
-                    
-                    client = get_openai_client()
-                    if client:
-                        # Analyser les charges avec OpenAI
-                        analysis = analyze_with_openai(client, bail_clauses_combined, charges_details_combined, bail_type, surface)
-                        if analysis:
-                            st.session_state.analysis = analysis
-                            st.session_state.analysis_complete = True
-    
+
+                    # Analyser les charges avec OpenAI
+                    analysis = analyze_with_openai(bail_clauses_combined, charges_details_combined, bail_type, surface)
+                    if analysis:
+                        st.session_state.analysis = analysis
+                        st.session_state.analysis_complete = True
+
     # Afficher les résultats
     if st.session_state.analysis_complete:
         analysis = st.session_state.analysis
         charges_analysis = analysis["charges_analysis"]
         global_analysis = analysis["global_analysis"]
-        
+
         st.header("Résultats de l'analyse")
-        
+
         # Résumé global
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -506,7 +502,7 @@ def main():
                 st.metric("Charges au m²/an", f"{global_analysis['charge_per_sqm']:.2f}€")
         with col3:
             st.metric("Taux de conformité", f"{global_analysis['conformity_rate']:.0f}%")
-        
+
         # Alerte sur le réalisme
         if global_analysis.get('realism') != "indéterminé":
             color_map = {"normal": "success", "bas": "info", "élevé": "warning"}
@@ -517,16 +513,16 @@ def main():
                 st.info(global_analysis['realism_details'])
             else:
                 st.warning(global_analysis['realism_details'])
-        
+
         # Visualisation graphique
         st.subheader("Répartition des charges")
         fig = plot_charges_breakdown(charges_analysis)
         if fig:
             st.pyplot(fig)
-        
+
         # Tableau d'analyse détaillée
         st.subheader("Analyse détaillée des charges")
-        
+
         # Créer DataFrame pour affichage
         df = pd.DataFrame([
             {
@@ -539,10 +535,10 @@ def main():
             }
             for charge in charges_analysis
         ])
-        
+
         # Afficher le DataFrame
         st.dataframe(df)
-        
+
         # Charges contestables
         contestable_charges = [c for c in charges_analysis if c.get("contestable")]
         if contestable_charges:
@@ -550,24 +546,24 @@ def main():
             for i, charge in enumerate(contestable_charges):
                 with st.expander(f"{charge['description']} ({charge['amount']:.2f}€)"):
                     st.markdown(f"**Montant:** {charge['amount']:.2f}€ ({charge['percentage']:.1f}% du total)")
-                    
+
                     if "contestable_reason" in charge and charge["contestable_reason"]:
                         st.markdown(f"**Raison:** {charge['contestable_reason']}")
                     else:
                         st.markdown(f"**Raison:** {charge['conformity_details']}")
-                    
+
                     if "matching_clause" in charge and charge["matching_clause"]:
                         st.markdown(f"""
                         **Clause correspondante dans le bail:**
                         >{charge['matching_clause']}
                         """)
-        
+
         # Recommandations
         st.subheader("Recommandations")
         recommendations = analysis["recommendations"]
         for i, rec in enumerate(recommendations):
             st.markdown(f"{i+1}. {rec}")
-        
+
         # Export des résultats
         st.download_button(
             label="Télécharger l'analyse complète (JSON)",
