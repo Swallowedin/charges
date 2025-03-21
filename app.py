@@ -79,6 +79,7 @@ if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
 # Récupération de la clé API depuis les secrets de Streamlit Cloud
+def get_openai_client():
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY n'est pas défini dans les variables d'environnement")
