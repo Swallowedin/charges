@@ -5,15 +5,12 @@ import json
 from openai import OpenAI
 import re
 
-# Configuration de la page avec mise en cache
-@st.cache_resource
-def configure_page():
-    st.set_page_config(
-        page_title="Analyseur de Charges Locatives avec GPT-4o-mini",
-        page_icon="📊",
-        layout="wide"
-    )
-configure_page()
+# Configuration de la page
+st.set_page_config(
+    page_title="Analyseur de Charges Locatives avec GPT-4o-mini",
+    page_icon="📊",
+    layout="wide"
+)
 
 # Définition des constantes
 CHARGES_TYPES = {
@@ -74,7 +71,6 @@ if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
 # Récupération de la clé API depuis les secrets de Streamlit Cloud
-@st.cache_resource
 def get_openai_client():
     try:
         api_key = st.secrets["openai"]["api_key"]
@@ -212,9 +208,8 @@ def analyze_with_openai(client, bail_clauses, charges_details, bail_type, surfac
             st.error(f"Erreur lors de l'analyse de backup: {str(fallback_error)}")
             return None
 
-@st.cache_data
 def plot_charges_breakdown(charges_analysis):
-    """Crée un graphique de répartition des charges (mis en cache)"""
+    """Crée un graphique de répartition des charges"""
     if not charges_analysis:
         return None
     
@@ -257,9 +252,6 @@ def main():
     Cet outil analyse la cohérence entre les charges refacturées par votre bailleur 
     et les clauses de votre contrat de bail en utilisant GPT-4o-mini.
     """)
-    
-    # Récupérer le client OpenAI dès le démarrage
-    client = get_openai_client()
     
     # Sidebar pour la configuration
     st.sidebar.header("Configuration")
@@ -306,15 +298,15 @@ def main():
     if submitted:
         if not bail_clauses or not charges_details:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
-        elif not client:
-            st.error("Erreur de configuration de l'API OpenAI. Vérifiez les secrets dans Streamlit Cloud.")
         else:
             with st.spinner("Analyse en cours avec GPT-4o-mini..."):
-                # Analyser les charges avec OpenAI
-                analysis = analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface)
-                if analysis:
-                    st.session_state.analysis = analysis
-                    st.session_state.analysis_complete = True
+                client = get_openai_client()
+                if client:
+                    # Analyser les charges avec OpenAI
+                    analysis = analyze_with_openai(client, bail_clauses, charges_details, bail_type, surface)
+                    if analysis:
+                        st.session_state.analysis = analysis
+                        st.session_state.analysis_complete = True
     
     # Afficher les résultats
     if st.session_state.analysis_complete:
@@ -367,26 +359,10 @@ def main():
             for charge in charges_analysis
         ])
         
-        # Définir le style conditionnel
-        def highlight_conformity(val):
-            if val == "conforme":
-                return 'background-color: rgba(76, 175, 80, 0.2)'
-            elif val == "à vérifier":
-                return 'background-color: rgba(255, 152, 0, 0.2)'
-            return ''
+        # Afficher le DataFrame sans style conditionnel pour éviter les problèmes
+        st.dataframe(df)
         
-        def highlight_contestable(val):
-            if val == "Oui":
-                return 'background-color: rgba(244, 67, 54, 0.2)'
-            return ''
-        
-        # Appliquer le style et afficher
-        styled_df = df.style.applymap(highlight_conformity, subset=['Conformité']) \
-                            .applymap(highlight_contestable, subset=['Contestable'])
-        
-        st.dataframe(styled_df)
-        
-        # Charges contestables (avec accordéon pour améliorer les performances)
+        # Charges contestables
         contestable_charges = [c for c in charges_analysis if c.get("contestable")]
         if contestable_charges:
             st.subheader("Charges potentiellement contestables")
