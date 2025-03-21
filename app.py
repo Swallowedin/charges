@@ -79,16 +79,11 @@ if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 
 # Récupération de la clé API depuis les secrets de Streamlit Cloud
-def get_openai_client():
-    try:
-        # Récupérer la clé API des secrets
-        api_key = st.secrets["openai"]["api_key"]
-        
-        # Créer le client sans l'argument problématique 'proxies'
-        return OpenAI(api_key=api_key)
-    except Exception as e:
-        st.error(f"Erreur lors de la récupération de la clé API OpenAI: {str(e)}")
-        return None
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY n'est pas défini dans les variables d'environnement")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Fonction pour extraire le texte d'une image avec OCR
 def extract_text_from_image(uploaded_file):
