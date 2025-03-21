@@ -228,9 +228,9 @@ def extract_charges_fallback(text):
     
     return charges
 
-# Appel à l'API OpenAI pour analyser les clauses et les charges
+# Update the analyze_with_openai function to use the new OpenAI client syntax
 def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
-    """Analyse des charges et clauses avec GPT-3.5-turbo"""
+    """Analyse des charges et clauses avec le modèle GPT"""
     try:
         prompt = f"""
         # Analyse de charges locatives
@@ -269,13 +269,15 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         NE RÉPONDS QU'AVEC LE JSON, SANS AUCUN AUTRE TEXTE.
         """
 
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+        # Utilisation du nouveau client OpenAI
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",  # ou "gpt-4o-mini" selon celui que vous voulez utiliser
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
 
-        result = json.loads(response.choices[0].message['content'])
+        # Les données de réponse ont une structure différente dans la nouvelle API
+        result = json.loads(response.choices[0].message.content)
         return result
 
     except Exception as e:
