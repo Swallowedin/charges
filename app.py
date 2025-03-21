@@ -9,6 +9,9 @@ from openai import OpenAI
 from PIL import Image
 import PyPDF2
 import docx2txt
+import pytesseract
+import cv2
+import numpy as np
 
 # Configuration de la page
 st.set_page_config(
@@ -84,6 +87,27 @@ def get_openai_client():
         st.error(f"Erreur lors de la récupération de la clé API OpenAI: {str(e)}")
         return None
 
+# Fonction pour extraire le texte d'une image avec OCR
+def extract_text_from_image(uploaded_file):
+    """Extraire le texte d'une image avec OCR"""
+    try:
+        # Convertir le fichier en image
+        image_bytes = uploaded_file.getvalue()
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        # Prétraitement de l'image pour améliorer l'OCR
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Appliquer l'OCR
+        text = pytesseract.image_to_string(thresh, lang='fra')
+        
+        return text
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte de l'image: {str(e)}")
+        return ""
+
 # Fonctions pour extraire le texte de différents types de fichiers
 def extract_text_from_pdf(uploaded_file):
     """Extraire le texte d'un fichier PDF"""
@@ -127,6 +151,8 @@ def get_file_content(uploaded_file):
         return extract_text_from_docx(uploaded_file)
     elif file_type == "text/plain":
         return extract_text_from_txt(uploaded_file)
+    elif file_type.startswith("image/"):
+        return extract_text_from_image(uploaded_file)
     else:
         st.warning(f"Type de fichier non pris en charge: {file_type}")
         return ""
@@ -375,8 +401,8 @@ def main():
             with col1:
                 st.subheader("Document du bail")
                 bail_file = st.file_uploader(
-                    "Téléchargez le bail (PDF, Word, TXT)",
-                    type=["pdf", "docx", "txt"],
+                    "Téléchargez le bail (PDF, Word, TXT, Image)",
+                    type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
                     help="Téléchargez le document contenant les clauses du bail"
                 )
                 
@@ -387,8 +413,8 @@ def main():
             with col2:
                 st.subheader("Document des charges")
                 charges_file = st.file_uploader(
-                    "Téléchargez la reddition des charges (PDF, Word, TXT)",
-                    type=["pdf", "docx", "txt"],
+                    "Téléchargez la reddition des charges (PDF, Word, TXT, Image)",
+                    type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
                     help="Téléchargez le document contenant le détail des charges"
                 )
                 
@@ -430,6 +456,13 @@ def main():
                 if not bail_clauses_file or not charges_details_file:
                     st.error("Impossible d'extraire le texte des fichiers téléchargés.")
                 else:
+                    # Afficher le texte extrait pour vérification
+                    with st.expander("Texte extrait du bail"):
+                        st.text(bail_clauses_file[:1000] + "..." if len(bail_clauses_file) > 1000 else bail_clauses_file)
+                    
+                    with st.expander("Texte extrait des charges"):
+                        st.text(charges_details_file[:1000] + "..." if len(charges_details_file) > 1000 else charges_details_file)
+                    
                     client = get_openai_client()
                     if client:
                         # Analyser les charges avec OpenAI
@@ -520,7 +553,7 @@ def main():
         # Export des résultats
         st.download_button(
             label="Télécharger l'analyse complète (JSON)",
-            data=json.dumps(analysis, indent=2, ensure_allow_nan=False, ensure_ascii=False).encode('utf-8'),
+            data=json.dumps(analysis, indent=2, ensure_ascii=False).encode('utf-8'),
             file_name='analyse_charges.json',
             mime='application/json',
         )
