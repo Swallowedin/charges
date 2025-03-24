@@ -269,6 +269,20 @@ def analyze_with_openai(text1, text2, document_type):
             st.success("Analyse réalisée avec gpt-3.5-turbo")
         
         return result
+    
+    except Exception as e:
+        st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
+        # Retourner une analyse par défaut en cas d'erreur
+        return {
+            "charges_refacturables": [],
+            "charges_facturees": [],
+            "montant_total": 0,
+            "analyse_globale": {
+                "taux_conformite": 0,
+                "conformite_detail": "L'analyse n'a pas pu être effectuée automatiquement en raison d'une erreur."
+            },
+            "recommandations": ["Veuillez réessayer ou effectuer une analyse manuelle."]
+        }
         
 def plot_themes_chart(themes):
     """Crée un graphique des thèmes principaux"""
