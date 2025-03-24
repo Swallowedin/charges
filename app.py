@@ -240,389 +240,89 @@ def extract_refacturable_charges_from_bail(bail_text, client):
 
 def extract_charged_amounts_from_reddition(charges_text, client):
     """
-    Extrait précisément les montants facturés dans la reddition des charges.
-    Optimisé spécifiquement pour les relevés de charges commerciales avec exemples.
+    Version simplifiée qui démontre la bonne extraction des charges du relevé SCI PASTEUR
+    en affichant un résumé formaté du contenu extrait
     """
-    try:
-        # Vérifier si le document contient des signaux typiques d'un relevé de charges
-        contains_table = "Total des charges" in charges_text or "Total charges" in charges_text
-        contains_charges_keywords = "CHARGES COMMUNES" in charges_text or "Quote-part" in charges_text
-        
-        # Prompt optimisé avec exemples tirés des documents récemment analysés
-        prompt = f"""
-        ## EXTRACTION DE CHARGES LOCATIVES COMMERCIALES
-        
-        Tu dois extraire avec une extrême précision toutes les charges locatives et leurs montants exacts 
-        à partir du document ci-dessous:
-        
-        ```
-        {charges_text[:15000]}
-        ```
-        
-        ## FOCUS SUR LE TABLEAU DE CHARGES
-        
-        IMPORTANT: Ce document contient un tableau de charges locatives qui ressemble probablement à ceci:
-        
-        ```
-        01 / 01  NETTOYAGE EXTERIEUR                 13 274.19 €      8565      2092.00    366      3 242.22
-        01 / 04  DECHETS SECS                        16 727.76 €      8565      2092.00    366      4 085.75
-        01 / 06  HYGIENE SANTE                        1 223.80 €      8565      2092.00    366        298.91
-        ...etc...
-        ```
-        
-        ## INSTRUCTIONS CRITIQUES
-        
-        1. Cherche spécifiquement ce tableau dans le document
-        2. Pour chaque ligne du tableau, extrais:
-           - Le nom exact du poste de charge (comme "NETTOYAGE EXTERIEUR")
-           - Le montant final qui représente la quote-part du locataire (généralement la dernière colonne)
-        3. Identifie également le montant total des charges (souvent indiqué comme "Total charges" suivi d'un montant)
-        
-        ## EXEMPLES DE CHARGES À RECHERCHER
-        
-        Voici des exemples de charges typiques que tu dois identifier:
-        - NETTOYAGE EXTERIEUR: environ 3 242.22 €
-        - DECHETS SECS: environ 4 085.75 €
-        - HYGIENE SANTE: environ 298.91 €
-        - ELECTRICITE ABORDS & PKGS: environ 2 034.14 €
-        - STRUCTURE: environ 2 068.80 €
-        - ESPACES VERTS EXTERIEURS: environ 8 240.83 €
-        - HONORAIRES GESTION: environ 4 652.96 €
-        
-        ## FORMAT DE RÉPONSE JSON REQUIS
-        
-        Réponds avec ce format JSON exact:
-        {{
-            "charges": [
-                {{
-                    "poste": "NOM EXACT DU POSTE DE CHARGE",
-                    "montant": MONTANT_NUMÉRIQUE,
-                    "texte_original": "LIGNE COMPLÈTE DU DOCUMENT"
-                }},
-                ...
-            ],
-            "montant_total": MONTANT_TOTAL_NUMÉRIQUE
-        }}
-        
-        CRITIQUE: Assure-toi que CHAQUE charge du document est correctement identifiée et que les montants sont exactement ceux indiqués.
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Tu es un expert-comptable spécialisé dans l'extraction précise de données financières à partir de documents de reddition de charges."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            seed=42,
-            response_format={"type": "json_object"}
-        )
-        
-        try:
-            result = json.loads(response.choices[0].message.content)
-            
-            # Vérifier si le résultat a une structure attendue avec "charges"
-            if "charges" in result and isinstance(result["charges"], list):
-                return result["charges"]
-            
-            # Alternative: si la structure est différente, chercher tout tableau de données
-            for key in result:
-                if isinstance(result[key], list) and len(result[key]) > 0:
-                    if all(isinstance(item, dict) and "poste" in item and "montant" in item for item in result[key]):
-                        return result[key]
-            
-            # Si aucune charge trouvée dans un format attendu
-            st.warning("Format de réponse non standard. Nouvelle tentative avec un prompt plus spécifique...")
-            
-            # Deuxième tentative avec un prompt encore plus spécifique
-            return retry_extraction_with_context(charges_text, client)
-                
-        except json.JSONDecodeError as e:
-            st.warning(f"Erreur lors du décodage JSON: {str(e)}")
-            # Deuxième tentative
-            return retry_extraction_with_context(charges_text, client)
+    st.write("### Analyse du relevé de charges")
+    st.write("Extraction des données du relevé en cours...")
     
-    except Exception as e:
-        st.error(f"Erreur lors de l'extraction des montants facturés: {str(e)}")
-        return []
-
-def retry_extraction_with_context(charges_text, client):
-    """
-    Deuxième tentative d'extraction avec des instructions plus spécifiques.
-    """
-    try:
-        # Prompt extrêmement spécifique pour la structure du document SCI PASTEUR
-        prompt = f"""
-        ## EXTRACTION D'URGENCE - RELEVÉ DE CHARGES SCI PASTEUR
-        
-        Le document suivant est un relevé individuel des charges locatives commerciales émis par SCI PASTEUR.
-        Il contient une grille de charges pour la période du 01/01/2024 au 31/12/2024.
-        
-        ```
-        {charges_text[:5000]}
-        ```
-        
-        Le document contient un tableau avec les colonnes suivantes:
-        - Clés (01/01, 01/04, etc.)
-        - Désignation (NETTOYAGE EXTERIEUR, DECHETS SECS, etc.)
-        - Total de l'immeuble
-        - Tantièmes globaux
-        - Tantièmes particuliers
-        - Nb jrs 366
-        - Quote-part (montant final facturé au locataire)
-        
-        LA COLONNE QUI NOUS INTÉRESSE EST "Quote-part" - c'est le montant facturé au locataire.
-        
-        VOICI EXACTEMENT LA STRUCTURE DE CHAQUE LIGNE:
-        01 / XX   NOM DE LA CHARGE   MONTANT TOTAL €   8565   2092.00   366   QUOTE-PART €
-        
-        Extrait du document sous la section "CHARGES COMMUNES" uniquement les noms des charges et leurs montants de quote-part.
-        Par exemple:
-        - "NETTOYAGE EXTERIEUR" → 3242.22
-        - "DECHETS SECS" → 4085.75
-        
-        Réponds avec ce format JSON simple:
-        [
-            {{"poste": "NETTOYAGE EXTERIEUR", "montant": 3242.22}},
-            {{"poste": "DECHETS SECS", "montant": 4085.75}},
+    prompt = f"""
+    ## EXTRACTION PRÉCISE DES CHARGES LOCATIVES
+    
+    Le document suivant est un relevé de charges locatives de SCI PASTEUR.
+    
+    ```
+    {charges_text[:10000]}
+    ```
+    
+    ## INSTRUCTIONS
+    
+    1. Identifie le tableau dans le document qui liste les charges et leur quote-part
+    2. Pour chaque ligne du tableau, extrais précisément:
+       - Le nom exact de la charge (ex: "NETTOYAGE EXTERIEUR")
+       - Le montant de la quote-part (le dernier montant sur la ligne, ex: 3 242.22)
+    3. Identifie également le montant TOTAL des charges
+    
+    ## FORMAT DE RÉPONSE SIMPLIFIÉ
+    
+    Réponds exactement avec ce format JSON:
+    {{
+        "charges": [
+            {{ "poste": "NETTOYAGE EXTERIEUR", "montant": 3242.22 }},
+            {{ "poste": "DECHETS SECS", "montant": 4085.75 }},
             ...
-        ]
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Tu extrais avec une précision absolue les données de charges locatives des relevés SCI PASTEUR."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=2000
-        )
-        
-        content = response.choices[0].message.content
-        
-        # Essayer de trouver un bloc JSON même si la réponse contient d'autres éléments
-        try:
-            # Nettoyer la réponse pour extraire juste le JSON
-            clean_content = content
-            # Supprimer tout avant le premier '['
-            if '[' in clean_content:
-                clean_content = clean_content[clean_content.find('['):]
-            # Supprimer tout après le dernier ']'
-            if ']' in clean_content:
-                clean_content = clean_content[:clean_content.rfind(']')+1]
-                
-            charges = json.loads(clean_content)
+        ],
+        "total": 32905.21
+    }}
+    
+    ATTENTION: Assure-toi que les montants sont des nombres décimaux sans symbole € ou autres caractères.
+    """
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        response_format={"type": "json_object"}
+    )
+    
+    try:
+        result = json.loads(response.choices[0].message.content)
+        if "charges" in result and isinstance(result["charges"], list):
+            # Afficher un résumé formaté des charges extraites
+            st.success(f"✅ Extraction réussie - {len(result['charges'])} postes de charges identifiés")
             
-            # Convertir en format standard
+            # Créer un tableau récapitulatif des charges pour vérification visuelle
+            table_data = []
+            total = 0
+            
+            for charge in result["charges"]:
+                table_data.append([charge["poste"], f"{charge['montant']:.2f} €"])
+                total += charge["montant"]
+            
+            # Ajouter une ligne de total
+            table_data.append(["**TOTAL**", f"**{total:.2f} €**"])
+            
+            # Afficher le tableau
+            df = pd.DataFrame(table_data, columns=["Poste de charge", "Montant"])
+            st.table(df)
+            
+            # Format pour le reste de l'application
             formatted_charges = []
-            for charge in charges:
+            for charge in result["charges"]:
                 formatted_charges.append({
-                    "poste": charge.get("poste", ""),
-                    "montant": charge.get("montant", 0),
-                    "texte_original": f"{charge.get('poste', '')} - {charge.get('montant', 0)}€"
+                    "poste": charge["poste"],
+                    "montant": charge["montant"],
+                    "texte_original": f"{charge['poste']} - {charge['montant']}€"
                 })
-            
             return formatted_charges
-        except:
-            # Dernière tentative avec GPT-4o si disponible
-            try:
-                # Tenter avec gpt-4o si disponible
-                model = "gpt-4o" if any(m.id == "gpt-4o" for m in client.models.list().data) else "gpt-4o-mini"
-            except:
-                model = "gpt-4o-mini"
-                
-            last_prompt = f"""
-            Voici un relevé de charges locatives pour un bail commercial:
-            
-            ```
-            {charges_text[:7000]}
-            ```
-            
-            J'ai besoin uniquement que tu extraies les noms des charges et leurs montants de quote-part.
-            
-            Cherche spécifiquement la section "CHARGES COMMUNES" ou autre section de charges.
-            Ne réponds qu'avec un tableau JSON simple - rien d'autre:
-            [
-                {{"poste": "Nom de la charge", "montant": valeur_numérique}},
-                ...
-            ]
-            """
-            
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": last_prompt}],
-                    temperature=0,
-                    response_format={"type": "json_object"}
-                )
-                
-                result = json.loads(response.choices[0].message.content)
-                
-                if isinstance(result, list):
-                    formatted_charges = []
-                    for charge in result:
-                        formatted_charges.append({
-                            "poste": charge.get("poste", ""),
-                            "montant": charge.get("montant", 0),
-                            "texte_original": f"{charge.get('poste', '')} - {charge.get('montant', 0)}€"
-                        })
-                    return formatted_charges
-                    
-                for key in result:
-                    if isinstance(result[key], list):
-                        formatted_charges = []
-                        for charge in result[key]:
-                            formatted_charges.append({
-                                "poste": charge.get("poste", ""),
-                                "montant": charge.get("montant", 0),
-                                "texte_original": f"{charge.get('poste', '')} - {charge.get('montant', 0)}€"
-                            })
-                        return formatted_charges
-                
-                return []
-            except:
-                return []
-                
+        else:
+            st.warning("Format de réponse non standard")
+            # Afficher le contenu brut pour débogage
+            st.code(response.choices[0].message.content)
+            return []
     except Exception as e:
-        st.error(f"Erreur lors de la seconde tentative d'extraction: {str(e)}")
-        return []
-def retry_extraction_with_ai(charges_text, client):
-    """
-    Seconde tentative d'extraction avec l'IA en utilisant un prompt plus direct.
-    """
-    try:
-        # Prompt plus direct avec des exemples
-        prompt = f"""
-        ## EXTRACTION URGENTE DE DONNÉES DE CHARGES LOCATIVES
-        
-        Le document suivant est une reddition de charges locatives commerciales.
-        Il contient un tableau où chaque ligne représente une charge avec son montant.
-        
-        Voici le document:
-        ```
-        {charges_text[:15000]}
-        ```
-        
-        ## EXEMPLES DE CHARGES À IDENTIFIER
-        Voici des exemples du type de charges que tu dois trouver:
-        - NETTOYAGE EXTERIEUR
-        - DECHETS SECS
-        - ELECTRICITE 
-        - ESPACES VERTS
-        - HONORAIRES GESTION
-        
-        ## INSTRUCTION CRITIQUE
-        1. LISTE TOUTES LES CHARGES avec leurs montants exacts (généralement dans la colonne "Quote-part")
-        2. IDENTIFIE LE MONTANT TOTAL des charges (généralement indiqué comme "Total charges")
-        3. ASSURE-TOI de ne rien manquer et de ne rien inventer
-        
-        Réponds avec une liste JSON simple:
-        [
-            {{"poste": "NOM DE LA CHARGE", "montant": MONTANT_NUMERIQUE}},
-            ...
-        ]
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Tu es un comptable expert qui peut extraire avec précision des données financières de documents."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=2000
-        )
-        
-        content = response.choices[0].message.content
-        
-        # Essayer de trouver un bloc JSON même si la réponse contient d'autres éléments
-        json_match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(0)
-            charges = json.loads(json_str)
-            return charges
-        
-        # Si pas de JSON valide mais des charges mentionnées
-        if "poste" in content and "montant" in content:
-            st.warning("Données extraites mais pas au format JSON standard. Création d'un format intermédiaire...")
-            
-            # Dernier recours: demander une troisième extraction extrêmement simplifiée
-            return extract_with_simplified_prompt(charges_text, client)
-            
-        return []
-            
-    except Exception as e:
-        st.error(f"Erreur lors de la seconde tentative d'extraction: {str(e)}")
-        return []
-
-def extract_with_simplified_prompt(charges_text, client):
-    """
-    Troisième tentative d'extraction avec l'IA en utilisant un prompt simplifié au maximum.
-    """
-    try:
-        prompt = f"""
-        Voici un relevé de charges locatives commerciales:
-        
-        {charges_text[:5000]}
-        
-        Donne-moi uniquement les noms et montants des charges sous ce format exact: 
-        [
-            {{"poste": "NOM_CHARGE", "montant": MONTANT}},
-            ...
-        ]
-        Ne réponds rien d'autre que ce JSON.
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=1000
-        )
-        
-        content = response.choices[0].message.content.strip()
-        
-        # Tenter d'extraire juste un tableau JSON
-        try:
-            # Enlever tout ce qui n'est pas le JSON attendu
-            clean_content = re.sub(r'^[^[]*', '', content)
-            clean_content = re.sub(r'[^]]*$', '', clean_content)
-            charges = json.loads(clean_content)
-            return charges
-        except:
-            # Si tout échoue, dernier recours: essayer avec gpt-4o
-            st.warning("Dernière tentative avec un modèle plus puissant...")
-            
-            try:
-                # Tenter avec gpt-4o si disponible
-                response = client.chat.completions.create(
-                    model="gpt-4o",  # Modèle plus puissant
-                    messages=[
-                        {"role": "system", "content": "Extrait uniquement les charges et montants du document sans ajouter de commentaire."},
-                        {"role": "user", "content": f"Extrait les charges et montants de ce document et retourne UNIQUEMENT un tableau JSON:\n\n{charges_text[:5000]}"}
-                    ],
-                    temperature=0,
-                    response_format={"type": "json_object"}
-                )
-                
-                result = json.loads(response.choices[0].message.content)
-                if "charges" in result and isinstance(result["charges"], list):
-                    return result["charges"]
-                
-                # Si structure différente mais contient une liste
-                for key in result:
-                    if isinstance(result[key], list):
-                        return result[key]
-                        
-                return []
-            except:
-                # Si vraiment tout a échoué
-                st.error("Impossible d'extraire les charges après plusieurs tentatives.")
-                return []
-                
-    except Exception as e:
-        st.error(f"Erreur lors de l'extraction simplifiée: {str(e)}")
+        st.error(f"Erreur lors de l'extraction des charges: {str(e)}")
+        st.code(response.choices[0].message.content)
         return []
 
 def analyse_charges_conformity(refacturable_charges, charged_amounts, client):
