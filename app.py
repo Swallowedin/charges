@@ -82,7 +82,8 @@ if 'analysis_complete' not in st.session_state:
 # Configuration de l'API OpenAI
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"] if "OPENAI_API_KEY" in st.secrets else os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY n'est pas défini dans les variables d'environnement")
+    st.error("⚠️ La clé API OpenAI n'est pas définie. Veuillez la configurer dans les variables d'environnement ou les secrets.")
+    st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -187,47 +188,6 @@ def display_file_preview(uploaded_file):
     else:
         st.write(f"Aperçu non disponible pour {uploaded_file.name} (type: {file_type})")
 
-# Extraction des charges avec regex (pour le backup uniquement)
-def extract_charges_fallback(text):
-    """Extrait les charges du texte de la reddition avec regex"""
-    charges = []
-    lines = text.split('\n')
-    current_category = ""
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        # Ligne contenant un montant en euros
-        if '€' in line:
-            # Essayer d'extraire le montant
-            amount_match = re.search(r'(\d[\d\s]*[\d,\.]+)\s*€', line)
-            if amount_match:
-                amount_str = amount_match.group(1).replace(' ', '').replace(',', '.')
-                try:
-                    amount = float(amount_str)
-                    # Extraire la description (tout ce qui précède le montant)
-                    description = line[:amount_match.start()].strip()
-                    if not description and current_category:
-                        description = current_category
-                    
-                    charges.append({
-                        "category": current_category,
-                        "description": description,
-                        "amount": amount
-                    })
-                except ValueError:
-                    pass
-        else:
-            # Probablement une catégorie
-            if ':' in line:
-                current_category = line.split(':')[0].strip()
-            elif line.isupper() or (len(line) > 3 and not any(c.isdigit() for c in line)):
-                current_category = line
-    
-    return charges
-
 def extract_relevant_sections(bail_text):
     """
     Extrait les sections pertinentes d'un bail volumineux en se concentrant sur les clauses liées aux charges.
@@ -286,8 +246,8 @@ def extract_relevant_sections(bail_text):
             in_relevant_section = True
             current_section.append(line)
             
-            # Récupérer également un certain nombre de lignes suivantes (contexte)
-            lines_to_capture = 20  # Nombre de lignes à capturer après un mot-clé
+            # Nombre de lignes à capturer après un mot-clé
+            lines_to_capture = 20
             
         elif in_relevant_section:
             current_section.append(line)
@@ -309,9 +269,9 @@ def extract_relevant_sections(bail_text):
     
     return extracted_text
 
-def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
+def analyze_with_gpt4o_mini(bail_clauses, charges_details, bail_type, surface=None):
     """
-    Version optimisée pour GPT-4o-mini uniquement, avec un focus sur la précision et la cohérence.
+    Analyse optimisée avec GPT-4o-mini pour maximiser la cohérence et la précision.
     """
     try:
         # Extraire les sections pertinentes du bail pour réduire le bruit
@@ -320,7 +280,7 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         # Informer l'utilisateur de l'optimisation
         original_length = len(bail_clauses)
         extracted_length = len(relevant_bail_text)
-        reduction_percent = round(100 - (extracted_length / original_length * 100), 1)
+        reduction_percent = round(100 - (extracted_length / original_length * 100), 1) if original_length > 0 else 0
         
         st.info(f"🔍 Optimisation du bail : {original_length:,} caractères → {extracted_length:,} caractères ({reduction_percent}% de réduction)")
         
@@ -328,10 +288,10 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         with st.expander("Aperçu des sections pertinentes extraites"):
             st.text(relevant_bail_text[:1000] + "..." if len(relevant_bail_text) > 1000 else relevant_bail_text)
         
-        # Prompt optimisé pour GPT-4o-mini avec des instructions explicites pour garantir la précision
+        # Prompt optimisé pour GPT-4o-mini avec focus sur la précision et la cohérence
         prompt = f"""
         # Analyse de charges locatives
-        
+
         ## Contexte
         Bail {bail_type}, analyse des charges refacturées vs clauses du bail.
         IMPORTANT: Le texte du bail a été extrait pour se concentrer sur les clauses pertinentes liées aux charges.
@@ -366,12 +326,14 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
         5. Le montant total doit être MATHÉMATIQUEMENT EXACT (somme précise des montants)
         6. Les analyses doivent être FACTUELLES et basées sur les clauses réelles du bail
         7. Soyez SYSTÉMATIQUE et MÉTHODIQUE dans l'analyse
+        8. Attribue une catégorie standard à chaque charge (utilise "SERVICES DIVERS" si aucune ne correspond)
+        9. Le calcul du pourcentage de chaque charge doit être EXACT et basé sur la formule: (montant_charge / montant_total) * 100
 
         ## Format JSON rigoureux
-        {{
-            "clauses_analysis":[{{"title":"","text":""}}],
+        {
+            "clauses_analysis":[{"title":"","text":""}],
             "charges_analysis":[
-                {{
+                {
                     "category":"",
                     "description":"",
                     "amount":0.00,
@@ -381,29 +343,32 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
                     "matching_clause":"",
                     "contestable":true|false,
                     "contestable_reason":""
-                }}
+                }
             ],
-            "global_analysis":{{
+            "global_analysis":{
                 "total_amount":0.00,
                 "charge_per_sqm":0.00,
                 "conformity_rate":0.0,
+                "contestable_amount":0.00,
+                "contestable_percentage":0.0,
                 "realism":"normal|bas|élevé",
                 "realism_details":""
-            }},
+            },
             "recommendations":[""]
-        }}
+        }
         
         IMPORTANT: Une analyse CORRECTE, COMPLÈTE et COHÉRENTE est IMPÉRATIVE. Suivez STRICTEMENT les consignes ci-dessus.
         """
 
-        # Appel à GPT-4o-mini avec température à 0 pour maximiser la déterminisme
+        # Appel à GPT-4o-mini avec température à 0 pour maximiser le déterminisme
         st.info("⏳ Analyse avec GPT-4o-mini en cours...")
         
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,  # Température 0 pour maximiser la cohérence
-            response_format={"type": "json_object"}  # Forcer une réponse JSON
+            response_format={"type": "json_object"},  # Forcer une réponse JSON
+            seed=42  # Utiliser une graine fixe pour renforcer la cohérence
         )
         
         # Traiter la réponse
@@ -417,57 +382,65 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
 
     except Exception as e:
         st.error(f"❌ Erreur lors de l'analyse: {str(e)}")
-        # Fallback en cas d'échec
-        return fallback_analysis(bail_clauses, charges_details, bail_type, surface)
+        return generate_fallback_analysis(bail_clauses, charges_details, bail_type, surface)
 
 def normalize_analysis_results(result):
     """
-    Normalise les résultats pour assurer la cohérence et la précision.
+    Normalise les résultats pour assurer la cohérence et la précision absolue.
     """
     if not result or "charges_analysis" not in result:
         return result
     
-    charges = result["charges_analysis"]
+    charges = result.get("charges_analysis", [])
     
     # Vérifier si les charges sont vides
     if not charges:
         return result
     
     # Recalculer les montants totaux avec précision
-    total_amount = sum(charge["amount"] for charge in charges)
+    total_amount = sum(charge.get("amount", 0) for charge in charges)
     total_amount = round(total_amount, 2)  # Arrondir à 2 décimales pour cohérence
     
     # Normaliser et recalculer les pourcentages pour chaque charge
     for charge in charges:
         # S'assurer que les montants sont des nombres et arrondis à 2 décimales
-        charge["amount"] = round(float(charge["amount"]), 2)
+        charge["amount"] = round(float(charge.get("amount", 0)), 2)
         # Recalculer les pourcentages avec précision
-        charge["percentage"] = round((charge["amount"] / total_amount * 100), 1) if total_amount > 0 else 0
+        charge["percentage"] = round((charge["amount"] / total_amount * 100), 1) if total_amount > 0 else 0.0
         # S'assurer que conformity est soit "conforme" soit "à vérifier"
         if "conformity" in charge and charge["conformity"] not in ["conforme", "à vérifier"]:
             charge["conformity"] = "à vérifier"
     
-    # Recalculer les métriques globales
+    # Vérifier et recalculer les métriques globales
     if "global_analysis" in result:
         global_analysis = result["global_analysis"]
         global_analysis["total_amount"] = total_amount
         
         # Recalculer le taux de conformité
-        conforming_charges = [c for c in charges if c["conformity"] == "conforme"]
+        conforming_charges = [c for c in charges if c.get("conformity") == "conforme"]
         conformity_rate = (len(conforming_charges) / len(charges) * 100) if charges else 0
         global_analysis["conformity_rate"] = round(conformity_rate, 1)
         
         # Recalculer les montants contestables
         contestable_charges = [c for c in charges if c.get("contestable", False)]
         contestable_amount = sum(c["amount"] for c in contestable_charges)
-        if "contestable_amount" not in global_analysis:
-            global_analysis["contestable_amount"] = round(contestable_amount, 2)
-        if "contestable_percentage" not in global_analysis:
-            global_analysis["contestable_percentage"] = round((contestable_amount / total_amount * 100), 1) if total_amount > 0 else 0
+        global_analysis["contestable_amount"] = round(contestable_amount, 2)
+        global_analysis["contestable_percentage"] = round((contestable_amount / total_amount * 100), 1) if total_amount > 0 else 0.0
+        
+        # S'assurer que les montants par mètre carré sont correctement calculés
+        if "charge_per_sqm" in global_analysis and global_analysis["charge_per_sqm"]:
+            global_analysis["charge_per_sqm"] = round(global_analysis["charge_per_sqm"], 2)
+    
+    # Vérifier que chaque charge a tous les champs requis
+    for charge in charges:
+        if "contestable" not in charge:
+            charge["contestable"] = False
+        if "contestable_reason" not in charge and charge["contestable"]:
+            charge["contestable_reason"] = "Raison non spécifiée"
     
     return result
 
-def fallback_analysis(bail_clauses, charges_details, bail_type, surface=None):
+def generate_fallback_analysis(bail_clauses, charges_details, bail_type, surface=None):
     """
     Analyse de secours simplifiée en cas d'échec de l'analyse principale.
     """
@@ -478,15 +451,15 @@ def fallback_analysis(bail_clauses, charges_details, bail_type, surface=None):
 
         # Créer une structure minimale de résultat
         return {
-            "clauses_analysis": [{"title": "Clause extraite manuellement", "text": clause.strip()} for clause in bail_clauses.split('\n') if clause.strip()],
+            "clauses_analysis": [{"title": "Clause extraite", "text": clause.strip()} for clause in bail_clauses.split('\n\n')[:5] if clause.strip()],
             "charges_analysis": [
                 {
-                    "category": charge["category"] if charge["category"] else "Divers",
+                    "category": "SERVICES DIVERS",
                     "description": charge["description"],
                     "amount": round(charge["amount"], 2),
-                    "percentage": round((charge["amount"] / total_amount * 100), 1) if total_amount > 0 else 0,
+                    "percentage": round((charge["amount"] / total_amount * 100), 1) if total_amount > 0 else 0.0,
                     "conformity": "à vérifier",
-                    "conformity_details": "Analyse de secours (méthode principale indisponible)",
+                    "conformity_details": "Analyse de secours automatique",
                     "matching_clause": None,
                     "contestable": False,
                     "contestable_reason": None
@@ -495,9 +468,11 @@ def fallback_analysis(bail_clauses, charges_details, bail_type, surface=None):
             "global_analysis": {
                 "total_amount": round(total_amount, 2),
                 "charge_per_sqm": round(total_amount / float(surface), 2) if surface and surface.replace('.', '').isdigit() else None,
-                "conformity_rate": 0,
+                "conformity_rate": 0.0,
+                "contestable_amount": 0.00,
+                "contestable_percentage": 0.0,
                 "realism": "indéterminé",
-                "realism_details": "Analyse de secours (méthode principale indisponible)"
+                "realism_details": "Analyse de secours automatique"
             },
             "recommendations": [
                 "Vérifier manuellement la conformité des charges avec les clauses du bail",
@@ -511,8 +486,10 @@ def fallback_analysis(bail_clauses, charges_details, bail_type, surface=None):
             "clauses_analysis": [],
             "charges_analysis": [],
             "global_analysis": {
-                "total_amount": 0,
-                "conformity_rate": 0,
+                "total_amount": 0.00,
+                "conformity_rate": 0.0,
+                "contestable_amount": 0.00,
+                "contestable_percentage": 0.0,
                 "realism": "indéterminé",
                 "realism_details": "Analyse impossible"
             },
@@ -522,6 +499,46 @@ def fallback_analysis(bail_clauses, charges_details, bail_type, surface=None):
             ]
         }
 
+def extract_charges_fallback(text):
+    """Extrait les charges du texte de la reddition avec regex"""
+    charges = []
+    lines = text.split('\n')
+    current_category = ""
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Ligne contenant un montant en euros
+        if '€' in line:
+            # Essayer d'extraire le montant
+            amount_match = re.search(r'(\d[\d\s]*[\d,\.]+)\s*€', line)
+            if amount_match:
+                amount_str = amount_match.group(1).replace(' ', '').replace(',', '.')
+                try:
+                    amount = float(amount_str)
+                    # Extraire la description (tout ce qui précède le montant)
+                    description = line[:amount_match.start()].strip()
+                    if not description and current_category:
+                        description = current_category
+                    
+                    charges.append({
+                        "category": current_category,
+                        "description": description,
+                        "amount": amount
+                    })
+                except ValueError:
+                    pass
+        else:
+            # Probablement une catégorie
+            if ':' in line:
+                current_category = line.split(':')[0].strip()
+            elif line.isupper() or (len(line) > 3 and not any(c.isdigit() for c in line)):
+                current_category = line
+    
+    return charges
+
 def plot_charges_breakdown(charges_analysis):
     """Crée un graphique de répartition des charges"""
     if not charges_analysis:
@@ -530,6 +547,17 @@ def plot_charges_breakdown(charges_analysis):
     # Préparer les données
     descriptions = [c["description"] for c in charges_analysis]
     amounts = [c["amount"] for c in charges_analysis]
+
+    # Si trop de catégories, regrouper les plus petites
+    if len(descriptions) > 8:
+        # Trier par montant
+        sorted_data = sorted(zip(amounts, descriptions), reverse=True)
+        top_values = sorted_data[:7]  # Garder les 7 plus grandes
+        other_sum = sum(amount for amount, _ in sorted_data[7:])
+        
+        # Reconstruire les listes
+        amounts = [amount for amount, _ in top_values] + [other_sum]
+        descriptions = [desc for _, desc in top_values] + ["Autres"]
 
     # Graphique camembert
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -559,37 +587,23 @@ def plot_charges_breakdown(charges_analysis):
     
     return fig
 
-def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charges_text=None):
-    """
-    Génère un rapport PDF complet de l'analyse des charges locatives.
-    
-    Args:
-        analysis: Résultats de l'analyse
-        bail_type: Type de bail (commercial ou habitation)
-        surface: Surface du bien en m²
-        bail_text: Texte des clauses du bail (optionnel)
-        charges_text: Texte des charges analysées (optionnel)
-    
-    Returns:
-        bytes: Le contenu du PDF généré
-    """
+def generate_pdf_report(analysis, bail_type, surface=None):
+    """Génère un rapport PDF de l'analyse"""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
     from reportlab.lib.units import cm
     from io import BytesIO
-    import matplotlib.pyplot as plt
     import datetime
     import tempfile
     
-    # Créer un buffer pour stocker le PDF
     buffer = BytesIO()
     
     # Créer le document PDF
     doc = SimpleDocTemplate(buffer, pagesize=A4, 
-                           rightMargin=2*cm, leftMargin=2*cm,
-                           topMargin=2*cm, bottomMargin=2*cm)
+                          rightMargin=2*cm, leftMargin=2*cm,
+                          topMargin=2*cm, bottomMargin=2*cm)
     
     # Contenu du document
     story = []
@@ -598,7 +612,6 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name='Center', parent=styles['Heading1'], alignment=1))
     styles.add(ParagraphStyle(name='Justify', parent=styles['Normal'], alignment=4))
-    styles.add(ParagraphStyle(name='Small', parent=styles['Normal'], fontSize=8))
     
     # Titre et date
     today = datetime.datetime.now().strftime("%d/%m/%Y")
@@ -619,10 +632,10 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
     if 'charge_per_sqm' in analysis['global_analysis'] and analysis['global_analysis']['charge_per_sqm']:
         info_data.append(["Charges au m²/an", f"{analysis['global_analysis']['charge_per_sqm']:.2f}€"])
     
-    info_data.append(["Taux de conformité", f"{analysis['global_analysis']['conformity_rate']:.0f}%"])
+    info_data.append(["Taux de conformité", f"{analysis['global_analysis']['conformity_rate']:.1f}%"])
+    info_data.append(["Charges contestables", f"{analysis['global_analysis'].get('contestable_percentage', 0):.1f}%"])
     info_data.append(["Réalisme", analysis['global_analysis'].get('realism', 'Non évalué')])
     
-    # Créer un tableau pour les informations
     info_table = Table(info_data, colWidths=[5*cm, 10*cm])
     info_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
@@ -651,12 +664,16 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
             descriptions = [c["description"] for c in analysis["charges_analysis"]]
             amounts = [c["amount"] for c in analysis["charges_analysis"]]
             
-            # Limiter à 10 éléments pour la lisibilité du graphique
-            if len(descriptions) > 10:
-                # Regrouper les petites valeurs
-                others_amount = sum(sorted(amounts)[:len(amounts)-9])
-                descriptions = [d for _, d in sorted(zip(amounts, descriptions), reverse=True)][:9] + ["Autres"]
-                amounts = sorted(amounts, reverse=True)[:9] + [others_amount]
+            # Limiter à 8 éléments pour la lisibilité du graphique
+            if len(descriptions) > 8:
+                # Trier par montant et regrouper les petites valeurs
+                sorted_data = sorted(zip(amounts, descriptions), reverse=True)
+                top_values = sorted_data[:7]  # Garder les 7 plus grandes
+                other_sum = sum(amount for amount, _ in sorted_data[7:])
+                
+                # Reconstruire les listes
+                amounts = [amount for amount, _ in top_values] + [other_sum]
+                descriptions = [desc for _, desc in top_values] + ["Autres"]
             
             fig, ax = plt.subplots(figsize=(8, 6))
             wedges, texts, autotexts = ax.pie(
@@ -732,25 +749,11 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
     
     story.append(Spacer(1, 0.5*cm))
     
-    # Ajouter les clauses analysées si disponibles
-    if bail_text:
-        story.append(PageBreak())
-        story.append(Paragraph("Clauses du bail analysées", styles['Heading2']))
-        
-        # Limiter la taille pour éviter des PDF trop volumineux
-        max_length = min(len(bail_text), 10000)
-        displayed_text = bail_text[:max_length] + ("..." if len(bail_text) > max_length else "")
-        
-        for clause in displayed_text.split('\n\n'):
-            if clause.strip():
-                story.append(Paragraph(clause, styles['Small']))
-                story.append(Spacer(1, 0.2*cm))
-    
     # Pied de page
     story.append(Spacer(1, 1*cm))
     story.append(Paragraph("Ce rapport a été généré automatiquement et sert uniquement à titre indicatif. "
                           "Pour une analyse juridique complète, veuillez consulter un professionnel du droit.", 
-                          styles['Small']))
+                          styles['Normal']))
     
     # Construire le PDF
     doc.build(story)
@@ -760,3 +763,209 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
     buffer.close()
     
     return pdf_content
+
+# ----------- INTERFACE UTILISATEUR -----------
+
+def main():
+    """Fonction principale de l'application Streamlit"""
+    
+    st.title("Analyseur de Charges Locatives")
+    st.markdown("📊 Analysez facilement la conformité de vos charges locatives avec les clauses de votre bail")
+    
+    # Création des onglets
+    tab1, tab2, tab3 = st.tabs(["Saisie des documents", "Analyse des charges", "Rapport"])
+    
+    with tab1:
+        st.header("1. Informations du bail")
+        
+        # Type de bail
+        bail_type = st.radio("Type de bail :", ["commercial", "habitation"])
+        
+        # Surface
+        surface = st.text_input("Surface en m² (optionnel) :")
+        
+        # Méthode de saisie des documents
+        input_method = st.radio("Méthode de saisie :", ["Copier-coller du texte", "Téléchargement de fichiers"])
+        
+        bail_clauses = ""
+        charges_details = ""
+        
+        if input_method == "Copier-coller du texte":
+            # Saisie directe
+            bail_clauses = st.text_area("Clauses du bail concernant les charges :", height=200, 
+                                       help="Copiez-collez les clauses du bail relatives aux charges locatives")
+            
+            charges_details = st.text_area("Détail des charges facturées :", height=200,
+                                          help="Copiez-collez le détail des charges facturées (reddition de charges)")
+            
+        else:
+            # Téléchargement de fichiers
+            st.subheader("Téléchargement du bail")
+            bail_files = st.file_uploader("Téléchargez le bail (PDF, Word, image, txt)", 
+                                       type=["pdf", "docx", "jpg", "jpeg", "png", "txt"], 
+                                       accept_multiple_files=True)
+            
+            if bail_files:
+                bail_clauses = process_multiple_files(bail_files)
+                with st.expander("Aperçu du bail"):
+                    if len(bail_files) == 1:
+                        display_file_preview(bail_files[0])
+                    st.text_area("Texte extrait du bail", value=bail_clauses[:1000] + "..." if len(bail_clauses) > 1000 else bail_clauses, height=150)
+            
+            st.subheader("Téléchargement de la reddition de charges")
+            charges_files = st.file_uploader("Téléchargez la reddition de charges (PDF, Word, image, txt)", 
+                                          type=["pdf", "docx", "jpg", "jpeg", "png", "txt"], 
+                                          accept_multiple_files=True)
+            
+            if charges_files:
+                charges_details = process_multiple_files(charges_files)
+                with st.expander("Aperçu de la reddition de charges"):
+                    if len(charges_files) == 1:
+                        display_file_preview(charges_files[0])
+                    st.text_area("Texte extrait de la reddition", value=charges_details[:1000] + "..." if len(charges_details) > 1000 else charges_details, height=150)
+        
+        # Bouton d'analyse
+        if st.button("📊 Lancer l'analyse des charges"):
+            if bail_clauses and charges_details:
+                with st.spinner("Analyse en cours..."):
+                    # Stocker les données dans la session state
+                    st.session_state.bail_clauses = bail_clauses
+                    st.session_state.charges_details = charges_details
+                    st.session_state.bail_type = bail_type
+                    st.session_state.surface = surface
+                    
+                    # Lancer l'analyse avec GPT-4o-mini
+                    result = analyze_with_gpt4o_mini(bail_clauses, charges_details, bail_type, surface)
+                    
+                    # Stocker le résultat
+                    st.session_state.analysis_result = result
+                    st.session_state.analysis_complete = True
+                    
+                    # Rediriger vers l'onglet d'analyse
+                    st.experimental_rerun()
+            else:
+                st.error("Veuillez saisir à la fois les clauses du bail et le détail des charges.")
+    
+    with tab2:
+        st.header("2. Analyse des charges")
+        
+        if not st.session_state.analysis_complete:
+            st.info("Veuillez d'abord compléter l'étape 1 : saisie des documents")
+        else:
+            result = st.session_state.analysis_result
+            
+            # Résumé global
+            st.subheader("Résumé global")
+            
+            # Afficher les informations principales dans des métriques
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total des charges", f"{result['global_analysis']['total_amount']:.2f}€")
+            
+            with col2:
+                conformity = f"{result['global_analysis']['conformity_rate']:.1f}%"
+                st.metric("Taux de conformité", conformity)
+            
+            with col3:
+                if 'charge_per_sqm' in result['global_analysis'] and result['global_analysis']['charge_per_sqm']:
+                    st.metric("Charge au m²", f"{result['global_analysis']['charge_per_sqm']:.2f}€/m²")
+                else:
+                    st.metric("Charges contestables", f"{result['global_analysis'].get('contestable_percentage', 0):.1f}%")
+            
+            # Graphique
+            st.subheader("Répartition des charges")
+            fig = plot_charges_breakdown(result["charges_analysis"])
+            if fig:
+                st.pyplot(fig)
+            
+            # Analyse de réalisme
+            if 'realism' in result['global_analysis'] and 'realism_details' in result['global_analysis']:
+                st.subheader("Analyse du réalisme")
+                
+                realism = result['global_analysis']['realism']
+                if realism == "normal":
+                    st.success(result['global_analysis']['realism_details'])
+                elif realism == "bas":
+                    st.info(result['global_analysis']['realism_details'])
+                elif realism == "élevé":
+                    st.warning(result['global_analysis']['realism_details'])
+                else:
+                    st.info(result['global_analysis']['realism_details'])
+            
+            # Tableau détaillé des charges
+            st.subheader("Détail des charges")
+            
+            # Préparation des données pour le tableau
+            charges_data = []
+            for charge in result["charges_analysis"]:
+                conformity = charge["conformity"]
+                conformity_icon = "✅" if conformity == "conforme" else "⚠️"
+                contestable_icon = "⚠️" if charge.get("contestable", False) else "✅"
+                
+                charges_data.append({
+                    "Description": charge["description"],
+                    "Montant": f"{charge['amount']:.2f}€",
+                    "% du total": f"{charge['percentage']:.1f}%",
+                    "Conformité": f"{conformity_icon} {conformity}",
+                    "Contestable": contestable_icon
+                })
+            
+            # Afficher le tableau
+            df = pd.DataFrame(charges_data)
+            st.dataframe(df, use_container_width=True)
+            
+            # Charges contestables
+            contestable_charges = [c for c in result["charges_analysis"] if c.get("contestable", False)]
+            if contestable_charges:
+                st.subheader("Charges potentiellement contestables")
+                
+                for i, charge in enumerate(contestable_charges):
+                    with st.expander(f"{charge['description']} ({charge['amount']:.2f}€ - {charge['percentage']:.1f}%)"):
+                        if "contestable_reason" in charge and charge["contestable_reason"]:
+                            st.warning(f"**Raison:** {charge['contestable_reason']}")
+                        
+                        if "matching_clause" in charge and charge["matching_clause"]:
+                            st.info(f"**Clause du bail:** {charge['matching_clause']}")
+                        
+                        if "conformity_details" in charge:
+                            st.write(f"**Détails:** {charge['conformity_details']}")
+            
+            # Recommandations
+            st.subheader("Recommandations")
+            for i, rec in enumerate(result["recommendations"]):
+                st.write(f"{i+1}. {rec}")
+    
+    with tab3:
+        st.header("3. Rapport")
+        
+        if not st.session_state.analysis_complete:
+            st.info("Veuillez d'abord compléter l'étape 1 : saisie des documents")
+        else:
+            st.subheader("Générer un rapport PDF")
+            
+            if st.button("📄 Générer le rapport PDF"):
+                with st.spinner("Génération du rapport en cours..."):
+                    result = st.session_state.analysis_result
+                    bail_type = st.session_state.bail_type
+                    surface = st.session_state.surface
+                    
+                    pdf_content = generate_pdf_report(result, bail_type, surface)
+                    
+                    # Préparer le téléchargement
+                    b64_pdf = base64.b64encode(pdf_content).decode('utf-8')
+                    
+                    # Créer un lien de téléchargement
+                    current_date = datetime.datetime.now().strftime("%Y%m%d")
+                    pdf_filename = f"analyse_charges_{bail_type}_{current_date}.pdf"
+                    
+                    href = f'<a href="data:application/pdf;base64,{b64_pdf}" download="{pdf_filename}">📥 Télécharger le rapport PDF</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+                    
+                    # Afficher un aperçu
+                    st.subheader("Aperçu du rapport")
+                    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
