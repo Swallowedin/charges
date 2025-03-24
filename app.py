@@ -13,71 +13,20 @@ import pytesseract
 import cv2
 import numpy as np
 import os
+import hashlib
 
 # Configuration de la page
 st.set_page_config(
-    page_title="Analyseur de Charges Locatives avec GPT-4o-mini",
+    page_title="Analyseur de Documents avec GPT-4o-mini",
     page_icon="📊",
     layout="wide"
 )
 
-# Définition des constantes
-CHARGES_TYPES = {
-    "commercial": [
-        "Entretien et nettoyage des parties communes",
-        "Eau et électricité des parties communes",
-        "Ascenseurs et équipements techniques",
-        "Espaces verts",
-        "Sécurité et surveillance",
-        "Gestion et honoraires",
-        "Impôts et taxes",
-        "Assurances"
-    ],
-    "habitation": [
-        "Entretien des parties communes",
-        "Eau",
-        "Chauffage collectif",
-        "Ascenseur",
-        "Espaces verts",
-        "Gardiennage"
-    ]
-}
-
-CHARGES_CONTESTABLES = [
-    "Grosses réparations (article 606 du Code civil)",
-    "Remplacement d'équipements obsolètes",
-    "Honoraires de gestion excessifs (>10% du montant des charges)",
-    "Frais de personnel sans rapport avec l'immeuble",
-    "Travaux d'amélioration (vs. entretien)",
-    "Taxes normalement à la charge du propriétaire",
-    "Assurance des murs et structure du bâtiment"
-]
-
-RATIOS_REFERENCE = {
-    "commercial": {
-        "charges/m2/an": {
-            "min": 30,
-            "max": 150,
-            "median": 80
-        },
-        "honoraires gestion (% charges)": {
-            "min": 2,
-            "max": 8,
-            "median": 5
-        }
-    },
-    "habitation": {
-        "charges/m2/an": {
-            "min": 15,
-            "max": 60,
-            "median": 35
-        }
-    }
-}
-
 # Initialisation de l'état de la session
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
+if 'analysis_cache' not in st.session_state:
+    st.session_state.analysis_cache = {}
 
 # Configuration de l'API OpenAI
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"] if "OPENAI_API_KEY" in st.secrets else os.getenv('OPENAI_API_KEY')
@@ -170,199 +119,49 @@ def process_multiple_files(uploaded_files):
     
     return combined_text
 
-def display_file_preview(uploaded_file):
-    """Afficher un aperçu du fichier selon son type"""
-    if uploaded_file is None:
-        return
-        
-    file_type = uploaded_file.type
-    
-    if file_type.startswith("image/"):
-        st.image(uploaded_file, caption=f"Aperçu: {uploaded_file.name}", use_column_width=True)
-    elif file_type == "application/pdf":
-        # Créer un lien pour visualiser le PDF
-        base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
-    else:
-        st.write(f"Aperçu non disponible pour {uploaded_file.name} (type: {file_type})")
+def get_content_hash(text1, text2):
+    """Génère un hash unique pour les entrées combinées"""
+    combined = (text1 or "") + "|" + (text2 or "")
+    return hashlib.md5(combined.encode('utf-8')).hexdigest()
 
-# Extraction des charges avec regex
-def extract_charges_fallback(text):
-    """Extrait les charges du texte de la reddition avec regex"""
-    charges = []
-    lines = text.split('\n')
-    current_category = ""
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        # Ligne contenant un montant en euros
-        if '€' in line:
-            # Essayer d'extraire le montant
-            amount_match = re.search(r'(\d[\d\s]*[\d,\.]+)\s*€', line)
-            if amount_match:
-                amount_str = amount_match.group(1).replace(' ', '').replace(',', '.')
-                try:
-                    amount = float(amount_str)
-                    # Extraire la description (tout ce qui précède le montant)
-                    description = line[:amount_match.start()].strip()
-                    if not description and current_category:
-                        description = current_category
-                    
-                    charges.append({
-                        "category": current_category,
-                        "description": description,
-                        "amount": amount
-                    })
-                except ValueError:
-                    pass
-        else:
-            # Probablement une catégorie
-            if ':' in line:
-                current_category = line.split(':')[0].strip()
-            elif line.isupper() or (len(line) > 3 and not any(c.isdigit() for c in line)):
-                current_category = line
-    
-    return charges
-
-def extract_relevant_sections(bail_text):
+def analyze_with_openai(text1, text2, document_type):
     """
-    Extrait les sections pertinentes d'un bail volumineux en se concentrant sur les clauses liées aux charges.
-    """
-    # Mots-clés pour identifier les sections relatives aux charges
-    keywords = [
-        "charges", "charges locatives", "charges récupérables", 
-        "dépenses communes", "charges communes", "répartition des charges",
-        "provision", "régularisation", "article 606", "article 605",
-        "frais", "honoraires", "dépenses", "refacturation", 
-        "parties communes", "loyer et charges", "reddition", "décompte"
-    ]
-    
-    # Identifier les titres potentiels des sections
-    title_patterns = [
-        r"(?i)article\s+\d+\s*[:-]?\s*(.*charges.*|.*récupéra.*|.*dépenses.*)",
-        r"(?i)chapitre\s+\d+\s*[:-]?\s*(.*charges.*|.*récupéra.*|.*dépenses.*)",
-        r"(?i)section\s+\d+\s*[:-]?\s*(.*charges.*|.*récupéra.*|.*dépenses.*)",
-        r"(?i)(charges|frais|dépenses)\s+\w+",
-        r"(?i)répartition\s+des\s+(charges|frais|dépenses)",
-        r"(?i)(provision|régularisation)\s+\w+"
-    ]
-    
-    # Diviser le texte en lignes
-    lines = bail_text.split('\n')
-    
-    # Extraire les sections pertinentes
-    relevant_sections = []
-    current_section = []
-    in_relevant_section = False
-    
-    for line in lines:
-        line_lower = line.lower()
-        
-        # Déterminer si cette ligne marque le début d'une section pertinente
-        is_start_of_relevant_section = False
-        
-        # Vérifier si la ligne contient un mot-clé
-        if any(keyword in line_lower for keyword in keywords):
-            is_start_of_relevant_section = True
-        
-        # Vérifier si la ligne correspond à un pattern de titre
-        for pattern in title_patterns:
-            if re.search(pattern, line):
-                is_start_of_relevant_section = True
-                break
-        
-        # Traiter la ligne selon son contexte
-        if is_start_of_relevant_section:
-            # Si on était déjà dans une section pertinente, sauvegarder la section précédente
-            if in_relevant_section and current_section:
-                relevant_sections.append('\n'.join(current_section))
-                current_section = []
-            
-            # Commencer une nouvelle section
-            in_relevant_section = True
-            current_section.append(line)
-            
-            # Récupérer également un certain nombre de lignes suivantes (contexte)
-            lines_to_capture = 20  # Nombre de lignes à capturer après un mot-clé
-            
-        elif in_relevant_section:
-            current_section.append(line)
-            
-            # Après avoir capturé assez de lignes, vérifier si on continue
-            if len(current_section) > lines_to_capture:
-                # Si on trouve un nouveau titre ou une ligne vide, terminer la section
-                if re.match(r"(?i)^(article|chapitre|section)\s+\d+", line) or line.strip() == "":
-                    in_relevant_section = False
-                    relevant_sections.append('\n'.join(current_section))
-                    current_section = []
-    
-    # Ne pas oublier la dernière section
-    if in_relevant_section and current_section:
-        relevant_sections.append('\n'.join(current_section))
-    
-    # Combiner toutes les sections pertinentes en un seul texte
-    extracted_text = "\n\n".join(relevant_sections)
-    
-    return extracted_text
-
-def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
-    """
-    Version optimisée pour analyser efficacement de grands documents de bail
-    en extrayant d'abord les sections pertinentes.
+    Analyse les documents avec OpenAI, avec mise en cache pour des résultats cohérents
     """
     try:
-        # Extraire les sections pertinentes du bail au lieu d'utiliser le document complet
-        relevant_bail_text = extract_relevant_sections(bail_clauses)
+        # Générer un hash unique pour cette combinaison de documents
+        content_hash = get_content_hash(text1, text2)
         
-        # Informer l'utilisateur de l'optimisation
-        original_length = len(bail_clauses)
-        extracted_length = len(relevant_bail_text)
-        reduction_percent = round(100 - (extracted_length / original_length * 100), 1)
+        # Vérifier si l'analyse est déjà en cache
+        if content_hash in st.session_state.analysis_cache:
+            st.success("Résultat récupéré du cache (analyse précédente identique)")
+            return st.session_state.analysis_cache[content_hash]
         
-        st.info(f"🔍 Optimisation du bail : {original_length:,} caractères → {extracted_length:,} caractères ({reduction_percent}% de réduction)")
-        
-        # Afficher un aperçu des sections extraites
-        with st.expander("Aperçu des sections pertinentes extraites"):
-            st.text(relevant_bail_text[:1000] + "..." if len(relevant_bail_text) > 1000 else relevant_bail_text)
-        
-        # Maintenant utiliser l'analyse OpenAI avec le texte extrait
         prompt = f"""
-        # Analyse de charges locatives
+        # Analyse de documents
         
         ## Contexte
-        Bail {bail_type}, analyse des charges refacturées vs clauses du bail.
-        IMPORTANT: Le texte du bail a été extrait pour se concentrer sur les clauses pertinentes liées aux charges.
-
-        ## Référentiel
-        Charges habituellement refacturables: {', '.join(CHARGES_TYPES[bail_type])}
-        Charges contestables: {', '.join(CHARGES_CONTESTABLES)}
-
-        ## Clauses du bail (sections pertinentes)
-        {relevant_bail_text}
-
-        ## Charges refacturées
-        {charges_details}
-
-        ## Surface: {surface if surface else "Non spécifiée"}
-
+        Document type: {document_type}
+        
+        ## Document 1
+        {text1[:10000]}
+        
+        ## Document 2
+        {text2[:10000]}
+        
         ## Tâche
-        1. Extraire clauses et charges avec montants
-        2. Analyser conformité de chaque charge avec le bail
-        3. Identifier charges contestables
-        4. Calculer total et ratio/m2 si surface fournie
-        5. Analyser réalisme: Commercial {RATIOS_REFERENCE['commercial']['charges/m2/an']['min']}-{RATIOS_REFERENCE['commercial']['charges/m2/an']['max']}€/m2/an, Habitation {RATIOS_REFERENCE['habitation']['charges/m2/an']['min']}-{RATIOS_REFERENCE['habitation']['charges/m2/an']['max']}€/m2/an
-        6. Formuler recommandations
-
+        1. Extraire les informations clés des documents
+        2. Identifier les thèmes principaux
+        3. Analyser la cohérence entre les documents
+        4. Formuler des observations pertinentes
+        
         ## Format JSON
         {{
-            "clauses_analysis":[{{"title":"","text":""}}],
-            "charges_analysis":[{{"category":"","description":"","amount":0,"percentage":0,"conformity":"conforme|à vérifier","conformity_details":"","matching_clause":"","contestable":true|false,"contestable_reason":""}}],
-            "global_analysis":{{"total_amount":0,"charge_per_sqm":0,"conformity_rate":0,"realism":"normal|bas|élevé","realism_details":""}},
-            "recommendations":[""]
+            "document1_analysis":[{{"title":"","content":""}}],
+            "document2_analysis":[{{"title":"","content":""}}],
+            "themes": [""],
+            "coherence_analysis": {{"coherence_level":"élevée|moyenne|faible","details":""}},
+            "observations": [""]
         }}
         """
 
@@ -371,7 +170,8 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
+                temperature=0.1,  # Réduire la température pour plus de cohérence
+                seed=42,  # Assurer la cohérence des résultats
                 response_format={"type": "json_object"}  # Forcer une réponse JSON
             )
             result = json.loads(response.choices[0].message.content)
@@ -384,67 +184,43 @@ def analyze_with_openai(bail_clauses, charges_details, bail_type, surface=None):
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                temperature=0.1,  # Réduire la température pour plus de cohérence
+                seed=42,  # Assurer la cohérence des résultats
                 response_format={"type": "json_object"}  # Forcer une réponse JSON
             )
             
             result = json.loads(response.choices[0].message.content)
             st.success("Analyse réalisée avec gpt-3.5-turbo")
         
+        # Stocker le résultat dans le cache
+        st.session_state.analysis_cache[content_hash] = result
         return result
 
     except Exception as e:
         st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
-        # Fallback avec analyse simple
-        try:
-            charges = extract_charges_fallback(charges_details)
-            total_amount = sum(charge["amount"] for charge in charges)
-
-            return {
-                "clauses_analysis": [{"title": "Clause extraite manuellement", "text": clause.strip()} for clause in bail_clauses.split('\n') if clause.strip()],
-                "charges_analysis": [
-                    {
-                        "category": charge["category"],
-                        "description": charge["description"],
-                        "amount": charge["amount"],
-                        "percentage": (charge["amount"] / total_amount * 100) if total_amount > 0 else 0,
-                        "conformity": "à vérifier",
-                        "conformity_details": "Analyse de backup (OpenAI indisponible)",
-                        "matching_clause": None,
-                        "contestable": False,
-                        "contestable_reason": None
-                    } for charge in charges
-                ],
-                "global_analysis": {
-                    "total_amount": total_amount,
-                    "charge_per_sqm": total_amount / float(surface) if surface else None,
-                    "conformity_rate": 0,
-                    "realism": "indéterminé",
-                    "realism_details": "Analyse de backup (OpenAI indisponible)"
-                },
-                "recommendations": [
-                    "Vérifier manuellement la conformité des charges avec les clauses du bail",
-                    "Demander des justificatifs détaillés pour toutes les charges importantes"
-                ]
-            }
-        except Exception as fallback_error:
-            st.error(f"Erreur lors de l'analyse de backup: {str(fallback_error)}")
-            return None
+        # Retourner une analyse par défaut en cas d'erreur
+        return {
+            "document1_analysis": [{"title": "Analyse manuelle nécessaire", "content": "Une erreur s'est produite lors de l'analyse automatique."}],
+            "document2_analysis": [{"title": "Analyse manuelle nécessaire", "content": "Une erreur s'est produite lors de l'analyse automatique."}],
+            "themes": ["Non disponible suite à une erreur"],
+            "coherence_analysis": {"coherence_level": "indéterminée", "details": "L'analyse n'a pas pu être effectuée automatiquement."},
+            "observations": ["Veuillez réessayer ou effectuer une analyse manuelle."]
+        }
         
-def plot_charges_breakdown(charges_analysis):
-    """Crée un graphique de répartition des charges"""
-    if not charges_analysis:
+def plot_themes_chart(themes):
+    """Crée un graphique des thèmes principaux"""
+    if not themes:
         return None
 
-    # Préparer les données
-    descriptions = [c["description"] for c in charges_analysis]
-    amounts = [c["amount"] for c in charges_analysis]
+    # Préparer les données (tous les thèmes ont le même poids par défaut)
+    labels = themes
+    sizes = [1] * len(themes)
 
     # Graphique camembert
     fig, ax = plt.subplots(figsize=(10, 6))
     wedges, texts, autotexts = ax.pie(
-        amounts, 
-        labels=descriptions, 
+        sizes, 
+        labels=labels, 
         autopct='%1.1f%%',
         textprops={'fontsize': 9}
     )
@@ -453,44 +229,22 @@ def plot_charges_breakdown(charges_analysis):
     plt.setp(autotexts, size=8, weight='bold')
     plt.setp(texts, size=8)
 
-    # Ajouter une légende
-    ax.legend(
-        wedges, 
-        [f"{desc} ({amt:.2f}€)" for desc, amt in zip(descriptions, amounts)],
-        title="Postes de charges",
-        loc="center left",
-        bbox_to_anchor=(1, 0, 0.5, 1),
-        fontsize=8
-    )
-
-    plt.title('Répartition des charges locatives')
+    plt.title('Thèmes principaux identifiés')
     plt.tight_layout()
     
     return fig
 
-def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charges_text=None):
+def generate_pdf_report(analysis, document_type, text1=None, text2=None):
     """
-    Génère un rapport PDF complet de l'analyse des charges locatives.
-    
-    Args:
-        analysis: Résultats de l'analyse
-        bail_type: Type de bail (commercial ou habitation)
-        surface: Surface du bien en m²
-        bail_text: Texte des clauses du bail (optionnel)
-        charges_text: Texte des charges analysées (optionnel)
-    
-    Returns:
-        bytes: Le contenu du PDF généré
+    Génère un rapport PDF complet de l'analyse des documents.
     """
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
     from reportlab.lib.units import cm
     from io import BytesIO
-    import matplotlib.pyplot as plt
     import datetime
-    import tempfile
     
     # Créer un buffer pour stocker le PDF
     buffer = BytesIO()
@@ -511,7 +265,7 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
     
     # Titre et date
     today = datetime.datetime.now().strftime("%d/%m/%Y")
-    title = f"Analyse des Charges Locatives - Bail {bail_type.capitalize()}"
+    title = f"Analyse de Documents - Type {document_type.capitalize()}"
     story.append(Paragraph(title, styles['Center']))
     story.append(Paragraph(f"Rapport généré le {today}", styles['Normal']))
     story.append(Spacer(1, 0.5*cm))
@@ -520,16 +274,9 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
     story.append(Paragraph("Informations générales", styles['Heading2']))
     
     info_data = [
-        ["Type de bail", bail_type.capitalize()],
-        ["Surface", f"{surface} m²" if surface else "Non spécifiée"],
-        ["Montant total des charges", f"{analysis['global_analysis']['total_amount']:.2f}€"],
+        ["Type de document", document_type.capitalize()],
+        ["Niveau de cohérence", analysis['coherence_analysis']['coherence_level']]
     ]
-    
-    if 'charge_per_sqm' in analysis['global_analysis'] and analysis['global_analysis']['charge_per_sqm']:
-        info_data.append(["Charges au m²/an", f"{analysis['global_analysis']['charge_per_sqm']:.2f}€"])
-    
-    info_data.append(["Taux de conformité", f"{analysis['global_analysis']['conformity_rate']:.0f}%"])
-    info_data.append(["Réalisme", analysis['global_analysis']['realism']])
     
     # Créer un tableau pour les informations
     info_table = Table(info_data, colWidths=[5*cm, 10*cm])
@@ -542,123 +289,45 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
     story.append(info_table)
     story.append(Spacer(1, 0.5*cm))
     
-    # Réalisme des charges
-    if 'realism_details' in analysis['global_analysis']:
-        story.append(Paragraph("Analyse du réalisme des charges", styles['Heading3']))
-        story.append(Paragraph(analysis['global_analysis']['realism_details'], styles['Justify']))
+    # Analyse de cohérence
+    if 'details' in analysis['coherence_analysis']:
+        story.append(Paragraph("Analyse de cohérence", styles['Heading3']))
+        story.append(Paragraph(analysis['coherence_analysis']['details'], styles['Justify']))
         story.append(Spacer(1, 0.5*cm))
     
-    # Graphique de répartition des charges
-    if analysis["charges_analysis"]:
-        story.append(Paragraph("Répartition des charges", styles['Heading2']))
-        
-        # Créer un graphique temporaire
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-            fig_path = tmp.name
-            
-            # Créer le graphique
-            descriptions = [c["description"] for c in analysis["charges_analysis"]]
-            amounts = [c["amount"] for c in analysis["charges_analysis"]]
-            
-            # Limiter à 10 éléments pour la lisibilité du graphique
-            if len(descriptions) > 10:
-                # Regrouper les petites valeurs
-                others_amount = sum(sorted(amounts)[:len(amounts)-9])
-                descriptions = [d for _, d in sorted(zip(amounts, descriptions), reverse=True)][:9] + ["Autres"]
-                amounts = sorted(amounts, reverse=True)[:9] + [others_amount]
-            
-            fig, ax = plt.subplots(figsize=(8, 6))
-            wedges, texts, autotexts = ax.pie(
-                amounts, 
-                labels=descriptions, 
-                autopct='%1.1f%%',
-                textprops={'fontsize': 9}
-            )
-            plt.setp(autotexts, size=8, weight='bold')
-            plt.title('Répartition des charges locatives')
-            plt.tight_layout()
-            plt.savefig(fig_path, format='png', dpi=150, bbox_inches='tight')
-            plt.close()
-            
-            # Ajouter l'image au PDF
-            img = Image(fig_path, width=15*cm, height=12*cm)
-            story.append(img)
-        
+    # Thèmes principaux
+    if analysis["themes"]:
+        story.append(Paragraph("Thèmes principaux", styles['Heading2']))
+        for theme in analysis["themes"]:
+            story.append(Paragraph(f"• {theme}", styles['Normal']))
         story.append(Spacer(1, 0.5*cm))
     
-    # Analyse détaillée des charges
-    story.append(Paragraph("Analyse détaillée des charges", styles['Heading2']))
+    # Analyse du document 1
+    story.append(Paragraph("Analyse du Document 1", styles['Heading2']))
+    for section in analysis["document1_analysis"]:
+        story.append(Paragraph(section["title"], styles['Heading3']))
+        story.append(Paragraph(section["content"], styles['Justify']))
+        story.append(Spacer(1, 0.3*cm))
     
-    charges_data = [["Description", "Montant (€)", "% du total", "Conformité", "Contestable"]]
+    # Analyse du document 2
+    story.append(PageBreak())
+    story.append(Paragraph("Analyse du Document 2", styles['Heading2']))
+    for section in analysis["document2_analysis"]:
+        story.append(Paragraph(section["title"], styles['Heading3']))
+        story.append(Paragraph(section["content"], styles['Justify']))
+        story.append(Spacer(1, 0.3*cm))
     
-    for charge in analysis["charges_analysis"]:
-        charges_data.append([
-            charge["description"],
-            f"{charge['amount']:.2f}€",
-            f"{charge['percentage']:.1f}%",
-            charge["conformity"],
-            "Oui" if charge.get("contestable") else "Non"
-        ])
-    
-    # Créer un tableau pour les charges
-    charges_table = Table(charges_data, colWidths=[6*cm, 2.5*cm, 2*cm, 2.5*cm, 2*cm])
-    charges_table.setStyle(TableStyle([
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('PADDING', (0, 0), (-1, -1), 6),
-        ('ALIGN', (1, 0), (2, -1), 'RIGHT'),
-    ]))
-    story.append(charges_table)
-    story.append(Spacer(1, 0.5*cm))
-    
-    # Charges potentiellement contestables
-    contestable_charges = [c for c in analysis["charges_analysis"] if c.get("contestable")]
-    if contestable_charges:
-        story.append(PageBreak())
-        story.append(Paragraph("Charges potentiellement contestables", styles['Heading2']))
-        
-        for charge in contestable_charges:
-            story.append(Paragraph(f"{charge['description']} ({charge['amount']:.2f}€)", styles['Heading3']))
-            story.append(Paragraph(f"Montant: {charge['amount']:.2f}€ ({charge['percentage']:.1f}% du total)", styles['Normal']))
-            
-            if "contestable_reason" in charge and charge["contestable_reason"]:
-                story.append(Paragraph(f"Raison: {charge['contestable_reason']}", styles['Normal']))
-            else:
-                story.append(Paragraph(f"Raison: {charge['conformity_details']}", styles['Normal']))
-            
-            if "matching_clause" in charge and charge["matching_clause"]:
-                story.append(Paragraph("Clause correspondante dans le bail:", styles['Normal']))
-                story.append(Paragraph(charge['matching_clause'], styles['Justify']))
-            
-            story.append(Spacer(1, 0.3*cm))
-    
-    # Recommandations
-    story.append(Paragraph("Recommandations", styles['Heading2']))
-    
-    for i, rec in enumerate(analysis["recommendations"]):
-        story.append(Paragraph(f"{i+1}. {rec}", styles['Normal']))
+    # Observations
+    story.append(Paragraph("Observations", styles['Heading2']))
+    for i, obs in enumerate(analysis["observations"]):
+        story.append(Paragraph(f"{i+1}. {obs}", styles['Normal']))
     
     story.append(Spacer(1, 0.5*cm))
-    
-    # Ajouter les clauses analysées si disponibles
-    if bail_text:
-        story.append(PageBreak())
-        story.append(Paragraph("Clauses du bail analysées", styles['Heading2']))
-        
-        # Limiter la taille pour éviter des PDF trop volumineux
-        max_length = min(len(bail_text), 10000)
-        displayed_text = bail_text[:max_length] + ("..." if len(bail_text) > max_length else "")
-        
-        for clause in displayed_text.split('\n\n'):
-            if clause.strip():
-                story.append(Paragraph(clause, styles['Small']))
-                story.append(Spacer(1, 0.2*cm))
     
     # Pied de page
     story.append(Spacer(1, 1*cm))
     story.append(Paragraph("Ce rapport a été généré automatiquement et sert uniquement à titre indicatif. "
-                          "Pour une analyse juridique complète, veuillez consulter un professionnel du droit.", 
+                          "Pour une analyse complète, veuillez consulter un professionnel du domaine concerné.", 
                           styles['Small']))
     
     # Construire le PDF
@@ -672,24 +341,19 @@ def generate_pdf_report(analysis, bail_type, surface=None, bail_text=None, charg
 
 # Interface utilisateur Streamlit
 def main():
-    st.title("Analyseur de Charges Locatives avec GPT-4o-mini")
+    st.title("Analyseur de Documents avec GPT-4o-mini")
     st.markdown("""
-    Cet outil analyse la cohérence entre les charges refacturées par votre bailleur 
-    et les clauses de votre contrat de bail en utilisant GPT-4o-mini.
+    Cet outil analyse la cohérence entre deux documents en utilisant GPT-4o-mini.
+    Pour les mêmes documents en entrée, l'analyse sera identique à chaque exécution.
     """)
 
     # Sidebar pour la configuration
     st.sidebar.header("Configuration")
 
-    bail_type = st.sidebar.selectbox(
-        "Type de bail",
-        options=["commercial", "habitation"],
+    document_type = st.sidebar.selectbox(
+        "Type de document",
+        options=["rapport", "contrat", "article", "correspondance", "autre"],
         index=0
-    )
-
-    surface = st.sidebar.text_input(
-        "Surface locative (m²)",
-        help="Utilisé pour calculer le ratio de charges au m²"
     )
 
     # Interface principale avec onglets
@@ -701,27 +365,25 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                st.subheader("Clauses du bail concernant les charges")
-                bail_clauses_manual = st.text_area(
-                    "Copiez-collez les clauses du bail concernant les charges refacturables",
-                    height=250,
-                    help="Utilisez un format avec une clause par ligne, commençant par •, - ou un numéro"
+                st.subheader("Document 1")
+                document1_manual = st.text_area(
+                    "Copiez-collez le contenu du premier document",
+                    height=250
                 )
 
             with col2:
-                st.subheader("Détail des charges refacturées")
-                charges_details_manual = st.text_area(
-                    "Entrez le détail des charges (poste et montant)",
-                    height=250,
-                    help="Format recommandé: une charge par ligne avec le montant en euros (ex: 'Nettoyage: 1200€')"
+                st.subheader("Document 2")
+                document2_manual = st.text_area(
+                    "Copiez-collez le contenu du deuxième document",
+                    height=250
                 )
 
             specific_questions = st.text_area(
                 "Questions spécifiques (facultatif)",
-                help="Avez-vous des questions particulières concernant certaines charges?"
+                help="Avez-vous des questions particulières concernant ces documents?"
             )
 
-            submitted_manual = st.form_submit_button("Analyser les charges")
+            submitted_manual = st.form_submit_button("Analyser les documents")
 
     # Onglet 2: Téléchargement de fichiers
     with tab2:
@@ -729,168 +391,126 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                st.subheader("Documents du bail")
-                bail_files = st.file_uploader(
-                    "Téléchargez le(s) document(s) du bail (PDF, Word, TXT, Image)",
+                st.subheader("Document 1")
+                doc1_files = st.file_uploader(
+                    "Téléchargez le(s) fichier(s) du document 1 (PDF, Word, TXT, Image)",
                     type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
-                    accept_multiple_files=True,
-                    help="Téléchargez un ou plusieurs documents contenant les clauses du bail"
+                    accept_multiple_files=True
                 )
 
-                if bail_files:
-                    st.write(f"{len(bail_files)} fichier(s) téléchargé(s) pour le bail")
-                    with st.expander("Aperçu des fichiers du bail"):
-                        for file in bail_files:
-                            st.write(f"**{file.name}**")
-                            display_file_preview(file)
-                            st.markdown("---")
+                if doc1_files:
+                    st.write(f"{len(doc1_files)} fichier(s) téléchargé(s) pour le document 1")
 
             with col2:
-                st.subheader("Documents des charges")
-                charges_files = st.file_uploader(
-                    "Téléchargez le(s) document(s) des charges (PDF, Word, TXT, Image)",
+                st.subheader("Document 2")
+                doc2_files = st.file_uploader(
+                    "Téléchargez le(s) fichier(s) du document 2 (PDF, Word, TXT, Image)",
                     type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
-                    accept_multiple_files=True,
-                    help="Téléchargez un ou plusieurs documents contenant le détail des charges"
+                    accept_multiple_files=True
                 )
 
-                if charges_files:
-                    st.write(f"{len(charges_files)} fichier(s) téléchargé(s) pour les charges")
-                    with st.expander("Aperçu des fichiers des charges"):
-                        for file in charges_files:
-                            st.write(f"**{file.name}**")
-                            display_file_preview(file)
-                            st.markdown("---")
+                if doc2_files:
+                    st.write(f"{len(doc2_files)} fichier(s) téléchargé(s) pour le document 2")
 
             specific_questions_file = st.text_area(
                 "Questions spécifiques (facultatif)",
-                help="Avez-vous des questions particulières concernant certaines charges?"
+                help="Avez-vous des questions particulières concernant ces documents?"
             )
 
             submitted_files = st.form_submit_button("Analyser les fichiers")
 
     # Traitement du formulaire de saisie manuelle
     if submitted_manual:
-        if not bail_clauses_manual or not charges_details_manual:
-            st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
+        if not document1_manual or not document2_manual:
+            st.error("Veuillez remplir les champs obligatoires (document 1 et document 2).")
         else:
             with st.spinner("Analyse en cours..."):
-                # Analyser les charges avec OpenAI
-                analysis = analyze_with_openai(bail_clauses_manual, charges_details_manual, bail_type, surface)
+                # Analyser les documents avec OpenAI
+                analysis = analyze_with_openai(document1_manual, document2_manual, document_type)
                 if analysis:
                     st.session_state.analysis = analysis
                     st.session_state.analysis_complete = True
                     # Sauvegarder les textes originaux pour l'export PDF
-                    st.session_state.bail_text = bail_clauses_manual
-                    st.session_state.charges_text = charges_details_manual
+                    st.session_state.document1_text = document1_manual
+                    st.session_state.document2_text = document2_manual
 
     # Traitement du formulaire de téléchargement de fichiers
     if submitted_files:
-        if not bail_files or not charges_files:
-            st.error("Veuillez télécharger au moins un fichier pour le bail et un fichier pour les charges.")
+        if not doc1_files or not doc2_files:
+            st.error("Veuillez télécharger au moins un fichier pour chaque document.")
         else:
             with st.spinner("Extraction et analyse des fichiers en cours..."):
                 # Extraire et combiner le texte de tous les fichiers
-                bail_clauses_combined = process_multiple_files(bail_files)
-                charges_details_combined = process_multiple_files(charges_files)
+                document1_combined = process_multiple_files(doc1_files)
+                document2_combined = process_multiple_files(doc2_files)
 
-                if not bail_clauses_combined or not charges_details_combined:
+                if not document1_combined or not document2_combined:
                     st.error("Impossible d'extraire le texte des fichiers téléchargés.")
                 else:
-                    # Afficher le texte extrait pour vérification
-                    with st.expander("Texte extrait du bail"):
-                        st.text(bail_clauses_combined[:2000] + "..." if len(bail_clauses_combined) > 2000 else bail_clauses_combined)
+                    # Afficher un résumé du texte extrait
+                    st.info(f"Texte extrait: Document 1 ({len(document1_combined)} caractères), Document 2 ({len(document2_combined)} caractères)")
 
-                    with st.expander("Texte extrait des charges"):
-                        st.text(charges_details_combined[:2000] + "..." if len(charges_details_combined) > 2000 else charges_details_combined)
-
-                    # Analyser les charges avec OpenAI
-                    analysis = analyze_with_openai(bail_clauses_combined, charges_details_combined, bail_type, surface)
+                    # Analyser les documents avec OpenAI
+                    analysis = analyze_with_openai(document1_combined, document2_combined, document_type)
                     if analysis:
                         st.session_state.analysis = analysis
                         st.session_state.analysis_complete = True
                         # Sauvegarder les textes originaux pour l'export PDF
-                        st.session_state.bail_text = bail_clauses_combined
-                        st.session_state.charges_text = charges_details_combined
+                        st.session_state.document1_text = document1_combined
+                        st.session_state.document2_text = document2_combined
 
     # Afficher les résultats
     if st.session_state.analysis_complete:
         analysis = st.session_state.analysis
-        charges_analysis = analysis["charges_analysis"]
-        global_analysis = analysis["global_analysis"]
 
         st.header("Résultats de l'analyse")
 
-        # Résumé global
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Montant total des charges", f"{global_analysis['total_amount']:.2f}€")
-        with col2:
-            if global_analysis.get('charge_per_sqm'):
-                st.metric("Charges au m²/an", f"{global_analysis['charge_per_sqm']:.2f}€")
-        with col3:
-            st.metric("Taux de conformité", f"{global_analysis['conformity_rate']:.0f}%")
+        # Afficher le niveau de cohérence
+        coherence_level = analysis['coherence_analysis']['coherence_level']
+        coherence_details = analysis['coherence_analysis']['details']
+        
+        # Définir la couleur en fonction du niveau de cohérence
+        color_map = {"élevée": "success", "moyenne": "warning", "faible": "error"}
+        alert_type = color_map.get(coherence_level, "info")
+        
+        if alert_type == "success":
+            st.success(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
+        elif alert_type == "warning":
+            st.warning(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
+        elif alert_type == "error":
+            st.error(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
+        else:
+            st.info(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
 
-        # Alerte sur le réalisme
-        if global_analysis.get('realism') != "indéterminé":
-            color_map = {"normal": "success", "bas": "info", "élevé": "warning"}
-            alert_type = color_map.get(global_analysis.get('realism'), "info")
-            if alert_type == "success":
-                st.success(global_analysis['realism_details'])
-            elif alert_type == "info":
-                st.info(global_analysis['realism_details'])
-            else:
-                st.warning(global_analysis['realism_details'])
+        # Afficher les thèmes principaux
+        st.subheader("Thèmes principaux")
+        for theme in analysis["themes"]:
+            st.markdown(f"- {theme}")
 
-        # Visualisation graphique
-        st.subheader("Répartition des charges")
-        fig = plot_charges_breakdown(charges_analysis)
-        if fig:
-            st.pyplot(fig)
+        # Visualisation graphique des thèmes
+        if len(analysis["themes"]) > 1:
+            st.subheader("Visualisation des thèmes")
+            fig = plot_themes_chart(analysis["themes"])
+            if fig:
+                st.pyplot(fig)
 
-        # Tableau d'analyse détaillée
-        st.subheader("Analyse détaillée des charges")
+        # Afficher l'analyse des documents dans des onglets
+        doc1_tab, doc2_tab = st.tabs(["Analyse Document 1", "Analyse Document 2"])
+        
+        with doc1_tab:
+            for section in analysis["document1_analysis"]:
+                with st.expander(section["title"]):
+                    st.markdown(section["content"])
+        
+        with doc2_tab:
+            for section in analysis["document2_analysis"]:
+                with st.expander(section["title"]):
+                    st.markdown(section["content"])
 
-        # Créer DataFrame pour affichage
-        df = pd.DataFrame([
-            {
-                "Description": charge["description"],
-                "Montant (€)": charge["amount"],
-                "% du total": f"{charge['percentage']:.1f}%",
-                "Conformité": charge["conformity"],
-                "Détails": charge["conformity_details"],
-                "Contestable": "Oui" if charge["contestable"] else "Non"
-            }
-            for charge in charges_analysis
-        ])
-
-        # Afficher le DataFrame
-        st.dataframe(df)
-
-        # Charges contestables
-        contestable_charges = [c for c in charges_analysis if c.get("contestable")]
-        if contestable_charges:
-            st.subheader("Charges potentiellement contestables")
-            for i, charge in enumerate(contestable_charges):
-                with st.expander(f"{charge['description']} ({charge['amount']:.2f}€)"):
-                    st.markdown(f"**Montant:** {charge['amount']:.2f}€ ({charge['percentage']:.1f}% du total)")
-
-                    if "contestable_reason" in charge and charge["contestable_reason"]:
-                        st.markdown(f"**Raison:** {charge['contestable_reason']}")
-                    else:
-                        st.markdown(f"**Raison:** {charge['conformity_details']}")
-
-                    if "matching_clause" in charge and charge["matching_clause"]:
-                        st.markdown(f"""
-                        **Clause correspondante dans le bail:**
-                        >{charge['matching_clause']}
-                        """)
-
-        # Recommandations
-        st.subheader("Recommandations")
-        recommendations = analysis["recommendations"]
-        for i, rec in enumerate(recommendations):
-            st.markdown(f"{i+1}. {rec}")
+        # Observations
+        st.subheader("Observations")
+        for i, obs in enumerate(analysis["observations"]):
+            st.markdown(f"{i+1}. {obs}")
 
         # Options d'export
         st.header("Exporter les résultats")
@@ -901,30 +521,29 @@ def main():
             st.download_button(
                 label="Télécharger l'analyse en JSON",
                 data=json.dumps(analysis, indent=2, ensure_ascii=False).encode('utf-8'),
-                file_name='analyse_charges.json',
+                file_name='analyse_documents.json',
                 mime='application/json',
             )
         
         with col2:
             # Export PDF
             try:
-                bail_text = st.session_state.get('bail_text', '')
-                charges_text = st.session_state.get('charges_text', '')
+                document1_text = st.session_state.get('document1_text', '')
+                document2_text = st.session_state.get('document2_text', '')
                 
                 # Générer le rapport PDF
                 pdf_content = generate_pdf_report(
                     analysis, 
-                    bail_type, 
-                    surface, 
-                    bail_text, 
-                    charges_text
+                    document_type, 
+                    document1_text, 
+                    document2_text
                 )
                 
                 # Bouton de téléchargement pour le PDF
                 st.download_button(
                     label="Télécharger le rapport PDF",
                     data=pdf_content,
-                    file_name="rapport_charges_locatives.pdf",
+                    file_name="rapport_analyse_documents.pdf",
                     mime="application/pdf",
                 )
             except Exception as e:
