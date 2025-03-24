@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import json
 import re
 import io
-import base64
 from openai import OpenAI
 from PIL import Image
 import PyPDF2
@@ -13,6 +12,7 @@ import pytesseract
 import cv2
 import numpy as np
 import os
+from pdf2image import convert_from_path
 
 # Configuration de la page
 st.set_page_config(
@@ -36,29 +36,24 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 def extract_text_from_image(uploaded_file):
     """Extraire le texte d'une image avec OCR"""
     try:
-        # Convertir le fichier en image
         image_bytes = uploaded_file.getvalue()
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        # Prétraitement de l'image pour améliorer l'OCR
+        # Prétraitement de l'image
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Appliquer l'OCR
         text = pytesseract.image_to_string(thresh, lang='fra')
-        
         return text
     except Exception as e:
         st.error(f"Erreur lors de l'extraction du texte de l'image: {str(e)}")
         return ""
 
-# Fonctions pour extraire le texte de différents types de fichiers
-# Fonction OCR pour les PDF composés d'images
-def ocr_from_pdf(pdf_path):
+# Fonction OCR pour les PDF
+def ocr_from_pdf(uploaded_file):
     """Extraire le texte d'un PDF à l'aide de l'OCR"""
     try:
-        images = convert_from_path(pdf_path)
+        images = convert_from_path(uploaded_file)
         text = ""
         for image in images:
             image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -68,7 +63,7 @@ def ocr_from_pdf(pdf_path):
         st.error(f"Erreur lors de l'OCR du PDF: {str(e)}")
         return ""
 
-# Fonctions pour extraire le texte de différents types de fichiers
+# Fonction pour extraire le texte d'un PDF
 def extract_text_from_pdf(uploaded_file):
     """Extraire le texte d'un fichier PDF"""
     text = ""
