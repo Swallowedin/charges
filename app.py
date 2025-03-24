@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import os
 from pdf2image import convert_from_path
+import tempfile
 
 # Configuration de la page
 st.set_page_config(
@@ -53,11 +54,17 @@ def extract_text_from_image(uploaded_file):
 def ocr_from_pdf(uploaded_file):
     """Extraire le texte d'un PDF à l'aide de l'OCR"""
     try:
-        images = convert_from_path(uploaded_file)
+        # Sauvegarder le fichier uploadé sur le système de fichiers temporaire
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            tmp.write(uploaded_file.getbuffer())  # Écrit le fichier uploadé dans un fichier temporaire
+            temp_pdf_path = tmp.name
+
+        images = convert_from_path(temp_pdf_path)
         text = ""
         for image in images:
             image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
             text += pytesseract.image_to_string(image_cv, lang='fra')
+        
         return text
     except Exception as e:
         st.error(f"Erreur lors de l'OCR du PDF: {str(e)}")
