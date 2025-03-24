@@ -192,7 +192,14 @@ def analyze_with_openai(text1, text2, document_type):
         # Analyse de charges de bail commercial
         
         ## Contexte
-        Analyse de charges locatives de bail commercial
+        Tu es un expert en analyse de baux commerciaux et de charges locatives. Ta mission est d'analyser rigoureusement les charges facturées au locataire par rapport aux clauses du bail.
+        
+        ## Instructions précises
+        1. Identifie précisément les charges refacturables selon le bail
+        2. Extrait chaque poste de charge facturé avec son montant exact
+        3. Calcule le pourcentage que représente chaque charge par rapport au total
+        4. Vérifie si chaque charge facturée correspond à une charge autorisée dans le bail
+        5. Identifie les charges potentiellement contestables avec une justification claire
         
         ## Contrat de bail commercial / Clauses de charges
         {relevant_bail_text[:10000]}
@@ -200,21 +207,38 @@ def analyze_with_openai(text1, text2, document_type):
         ## Reddition des charges
         {text2[:10000]}
         
-        ## Tâche
-        1. Identifier les clauses concernant les charges dans le bail
-        2. Extraire les postes de charges facturés dans la reddition
-        3. Analyser la conformité entre les charges facturées et le bail
-        4. Évaluer si certaines charges pourraient être contestables
-        5. Formuler des observations et recommandations
-        
-        ## Format JSON
+        ## Format de sortie JSON attendu (strictement)
         {{
-            "clauses_analysis":[{{"title":"","content":""}}],
-            "charges_analysis":[{{"poste":"","montant":0,"pourcentage":0,"conformite":"conforme|à vérifier|non conforme","details":"","contestable":true|false,"raison_contestation":""}}],
-            "themes": [""],
-            "coherence_analysis": {{"conformite_globale":"élevée|moyenne|faible","details":""}},
-            "recommandations": [""]
+            "charges_refacturables": [
+                {{
+                    "categorie": "Nom de la catégorie de charge",
+                    "description": "Description exacte de la charge selon le bail",
+                    "base_legale": "Article ou clause du bail permettant cette charge"
+                }}
+            ],
+            "charges_facturees": [
+                {{
+                    "poste": "Intitulé exact de la charge facturée",
+                    "montant": 0,
+                    "pourcentage": 0,
+                    "conformite": "conforme|à vérifier|non conforme",
+                    "justification": "Raison précise de la conformité ou non-conformité",
+                    "contestable": true|false,
+                    "raison_contestation": "Raison précise de la contestation possible"
+                }}
+            ],
+            "montant_total": 0,
+            "analyse_globale": {{
+                "taux_conformite": 0,
+                "conformite_detail": "Explication détaillée du taux de conformité"
+            }},
+            "recommandations": [
+                "Recommandation précise et actionnable 1",
+                "Recommandation précise et actionnable 2"
+            ]
         }}
+        
+        Sois extrêmement précis dans les montants, les pourcentages et l'identification des charges. Ne crée pas de catégories vagues ou génériques. N'inclus pas de section "thèmes principaux". Concentre-toi uniquement sur les données factuelles et l'analyse des charges.
         """
 
         # Essayer d'abord avec gpt-4o-mini
@@ -222,8 +246,8 @@ def analyze_with_openai(text1, text2, document_type):
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,  # Réduire la température pour plus de cohérence
-                seed=42,  # Assurer la cohérence des résultats
+                temperature=0.1,  # Température basse pour cohérence maximale
+                seed=42,  # Seed fixe pour assurer la cohérence des résultats
                 response_format={"type": "json_object"}  # Forcer une réponse JSON
             )
             result = json.loads(response.choices[0].message.content)
@@ -236,26 +260,15 @@ def analyze_with_openai(text1, text2, document_type):
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,  # Réduire la température pour plus de cohérence
-                seed=42,  # Assurer la cohérence des résultats
-                response_format={"type": "json_object"}  # Forcer une réponse JSON
+                temperature=0.1,
+                seed=42,  # Même seed pour cohérence
+                response_format={"type": "json_object"}
             )
             
             result = json.loads(response.choices[0].message.content)
             st.success("Analyse réalisée avec gpt-3.5-turbo")
         
         return result
-
-    except Exception as e:
-        st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
-        # Retourner une analyse par défaut en cas d'erreur
-        return {
-            "clauses_analysis": [{"title": "Analyse manuelle nécessaire", "content": "Une erreur s'est produite lors de l'analyse automatique."}],
-            "charges_analysis": [],
-            "themes": ["Non disponible suite à une erreur"],
-            "coherence_analysis": {"conformite_globale": "indéterminée", "details": "L'analyse n'a pas pu être effectuée automatiquement."},
-            "recommandations": ["Veuillez réessayer ou effectuer une analyse manuelle."]
-        }
         
 def plot_themes_chart(themes):
     """Crée un graphique des thèmes principaux"""
@@ -286,7 +299,7 @@ def plot_themes_chart(themes):
 
 def generate_pdf_report(analysis, document_type, text1=None, text2=None):
     """
-    Génère un rapport PDF complet de l'analyse des documents.
+    Génère un rapport PDF complet et précis de l'analyse des charges locatives commerciales.
     """
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -323,9 +336,17 @@ def generate_pdf_report(analysis, document_type, text1=None, text2=None):
     # Informations générales
     story.append(Paragraph("Informations générales", styles['Heading2']))
     
+    # Préparation des données pour le tableau d'information
     info_data = [
-        ["Type de bail", "Commercial"],
+        ["Type de bail", "Commercial"]
     ]
+    
+    # Ajout des informations financières si disponibles
+    if "montant_total" in analysis:
+        info_data.append(["Montant total des charges", f"{analysis['montant_total']:.2f}€"])
+    
+    if "analyse_globale" in analysis and "taux_conformite" in analysis["analyse_globale"]:
+        info_data.append(["Taux de conformité", f"{analysis['analyse_globale']['taux_conformite']}%"])
     
     # Créer un tableau pour les informations
     info_table = Table(info_data, colWidths=[5*cm, 10*cm])
@@ -338,38 +359,47 @@ def generate_pdf_report(analysis, document_type, text1=None, text2=None):
     story.append(info_table)
     story.append(Spacer(1, 0.5*cm))
     
-    # Analyse de cohérence
-    if 'details' in analysis['coherence_analysis']:
+    # Analyse de conformité
+    if "analyse_globale" in analysis and "conformite_detail" in analysis["analyse_globale"]:
         story.append(Paragraph("Analyse de conformité", styles['Heading3']))
-        story.append(Paragraph(analysis['coherence_analysis']['details'], styles['Justify']))
+        story.append(Paragraph(analysis["analyse_globale"]["conformite_detail"], styles['Justify']))
         story.append(Spacer(1, 0.5*cm))
     
-    # Thèmes principaux
-    if analysis["themes"]:
-        story.append(Paragraph("Thèmes principaux", styles['Heading2']))
-        for theme in analysis["themes"]:
-            story.append(Paragraph(f"• {theme}", styles['Normal']))
+    # Charges refacturables selon le bail
+    if "charges_refacturables" in analysis and analysis["charges_refacturables"]:
+        story.append(Paragraph("Charges refacturables selon le bail", styles['Heading2']))
+        
+        # Création du tableau des charges refacturables
+        refac_data = [["Catégorie", "Description", "Base légale / contractuelle"]]
+        
+        for charge in analysis["charges_refacturables"]:
+            refac_data.append([
+                charge.get("categorie", ""),
+                charge.get("description", ""),
+                charge.get("base_legale", "")
+            ])
+        
+        refac_table = Table(refac_data, colWidths=[4*cm, 7*cm, 4*cm])
+        refac_table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('PADDING', (0, 0), (-1, -1), 6),
+        ]))
+        story.append(refac_table)
         story.append(Spacer(1, 0.5*cm))
     
-    # Analyse des clauses du bail
-    story.append(Paragraph("Analyse des clauses du bail", styles['Heading2']))
-    for section in analysis["clauses_analysis"]:
-        story.append(Paragraph(section["title"], styles['Heading3']))
-        story.append(Paragraph(section["content"], styles['Justify']))
-        story.append(Spacer(1, 0.3*cm))
-    
-    # Analyse des charges
-    if "charges_analysis" in analysis and analysis["charges_analysis"]:
-        story.append(PageBreak())
+    # Analyse des charges facturées
+    if "charges_facturees" in analysis and analysis["charges_facturees"]:
         story.append(Paragraph("Analyse des charges facturées", styles['Heading2']))
         
-        # Créer un tableau pour les charges
+        # Création du tableau des charges facturées
         charges_data = [["Poste", "Montant (€)", "% du total", "Conformité", "Contestable"]]
         
-        for charge in analysis["charges_analysis"]:
+        for charge in analysis["charges_facturees"]:
             charges_data.append([
                 charge.get("poste", ""),
-                str(charge.get("montant", 0)),
+                f"{charge.get('montant', 0):.2f}",
                 f"{charge.get('pourcentage', 0):.1f}%",
                 charge.get("conformite", ""),
                 "Oui" if charge.get("contestable", False) else "Non"
@@ -386,26 +416,36 @@ def generate_pdf_report(analysis, document_type, text1=None, text2=None):
         story.append(Spacer(1, 0.5*cm))
         
         # Charges contestables
-        contestable_charges = [c for c in analysis["charges_analysis"] if c.get("contestable", False)]
+        contestable_charges = [c for c in analysis["charges_facturees"] if c.get("contestable", False)]
         if contestable_charges:
-            story.append(Paragraph("Charges potentiellement contestables", styles['Heading3']))
+            story.append(Paragraph("Charges potentiellement contestables", styles['Heading2']))
+            
             for charge in contestable_charges:
-                story.append(Paragraph(f"{charge.get('poste', '')} ({charge.get('montant', 0)}€)", styles['Heading4']))
-                story.append(Paragraph(f"Raison: {charge.get('raison_contestation', '')}", styles['Normal']))
-                story.append(Paragraph(f"Détails: {charge.get('details', '')}", styles['Normal']))
-                story.append(Spacer(1, 0.2*cm))
+                charge_title = f"{charge.get('poste', '')} ({charge.get('montant', 0):.2f}€)"
+                story.append(Paragraph(charge_title, styles['Heading3']))
+                story.append(Paragraph(f"Montant: {charge.get('montant', 0):.2f}€ ({charge.get('pourcentage', 0):.1f}% du total)", styles['Normal']))
+                
+                if "raison_contestation" in charge and charge["raison_contestation"]:
+                    story.append(Paragraph(f"Raison: {charge['raison_contestation']}", styles['Normal']))
+                
+                if "justification" in charge and charge["justification"]:
+                    story.append(Paragraph(f"Justification: {charge['justification']}", styles['Normal']))
+                    
+                story.append(Spacer(1, 0.3*cm))
     
     # Recommandations
-    story.append(Paragraph("Recommandations", styles['Heading2']))
-    for i, rec in enumerate(analysis["recommandations"]):
-        story.append(Paragraph(f"{i+1}. {rec}", styles['Normal']))
-    
-    story.append(Spacer(1, 0.5*cm))
+    if "recommandations" in analysis and analysis["recommandations"]:
+        story.append(PageBreak())
+        story.append(Paragraph("Recommandations", styles['Heading2']))
+        
+        for i, rec in enumerate(analysis["recommandations"]):
+            story.append(Paragraph(f"{i+1}. {rec}", styles['Normal']))
+            story.append(Spacer(1, 0.2*cm))
     
     # Pied de page
     story.append(Spacer(1, 1*cm))
     story.append(Paragraph("Ce rapport a été généré automatiquement et sert uniquement à titre indicatif. "
-                          "Pour une analyse complète, veuillez consulter un professionnel du domaine concerné.", 
+                          "Pour une analyse juridique complète, veuillez consulter un professionnel du droit.", 
                           styles['Small']))
     
     # Construire le PDF
@@ -416,7 +456,7 @@ def generate_pdf_report(analysis, document_type, text1=None, text2=None):
     buffer.close()
     
     return pdf_content
-
+    
 # Interface utilisateur Streamlit
 def main():
     st.title("Analyseur de Charges Locatives Commerciales avec GPT-4o-mini")
@@ -549,74 +589,93 @@ def main():
     if st.session_state.analysis_complete:
         analysis = st.session_state.analysis
 
-        st.header("Résultats de l'analyse")
+        st.header("Résultats de l'analyse des charges locatives commerciales")
 
-        # Afficher le niveau de conformité
-        coherence_level = analysis['coherence_analysis']['conformite_globale']
-        coherence_details = analysis['coherence_analysis']['details']
+        # Afficher le montant total et la conformité globale
+        col1, col2 = st.columns(2)
+        with col1:
+            if "montant_total" in analysis:
+                st.metric("Montant total des charges", f"{analysis['montant_total']:.2f}€")
+        with col2:
+            if "analyse_globale" in analysis and "taux_conformite" in analysis["analyse_globale"]:
+                st.metric("Taux de conformité", f"{analysis['analyse_globale']['taux_conformite']}%")
         
-        # Définir la couleur en fonction du niveau de conformité
-        color_map = {"élevée": "success", "moyenne": "warning", "faible": "error"}
-        alert_type = color_map.get(coherence_level, "info")
-        
-        if alert_type == "success":
-            st.success(f"Niveau de conformité: {coherence_level}. {coherence_details}")
-        elif alert_type == "warning":
-            st.warning(f"Niveau de conformité: {coherence_level}. {coherence_details}")
-        elif alert_type == "error":
-            st.error(f"Niveau de conformité: {coherence_level}. {coherence_details}")
+        # Détail de l'analyse de conformité
+        if "analyse_globale" in analysis and "conformite_detail" in analysis["analyse_globale"]:
+            st.markdown("### Analyse de conformité")
+            st.info(analysis["analyse_globale"]["conformite_detail"])
+
+        # Section 1: Charges refacturables selon le bail
+        st.markdown("## Charges refacturables selon le bail")
+        if "charges_refacturables" in analysis and analysis["charges_refacturables"]:
+            refacturables_df = pd.DataFrame(analysis["charges_refacturables"])
+            st.dataframe(refacturables_df, use_container_width=True)
         else:
-            st.info(f"Niveau de conformité: {coherence_level}. {coherence_details}")
+            st.warning("Aucune information sur les charges refacturables n'a été identifiée dans le bail.")
 
-        # Afficher les thèmes principaux
-        st.subheader("Thèmes principaux")
-        for theme in analysis["themes"]:
-            st.markdown(f"- {theme}")
+        # Section 2: Charges effectivement facturées
+        st.markdown("## Charges facturées")
+        if "charges_facturees" in analysis and analysis["charges_facturees"]:
+            # Préparation des données pour le tableau et le graphique
+            charges_df = pd.DataFrame([
+                {
+                    "Poste": charge["poste"],
+                    "Montant (€)": charge["montant"],
+                    "% du total": f"{charge['pourcentage']:.1f}%",
+                    "Conformité": charge["conformite"],
+                    "Contestable": "Oui" if charge.get("contestable", False) else "Non"
+                }
+                for charge in analysis["charges_facturees"]
+            ])
+            
+            # Affichage du tableau
+            st.dataframe(charges_df, use_container_width=True)
+            
+            # Préparation du graphique camembert
+            fig, ax = plt.subplots(figsize=(10, 6))
+            labels = [charge["poste"] for charge in analysis["charges_facturees"]]
+            sizes = [charge["montant"] for charge in analysis["charges_facturees"]]
+            
+            # Génération du graphique
+            wedges, texts, autotexts = ax.pie(
+                sizes, 
+                labels=labels, 
+                autopct='%1.1f%%',
+                textprops={'fontsize': 9},
+                startangle=90
+            )
+            
+            # Ajustements du graphique
+            plt.setp(autotexts, size=9, weight='bold')
+            plt.setp(texts, size=9)
+            ax.axis('equal')  # Equal aspect ratio ensures the pie chart is circular
+            plt.title('Répartition des charges locatives commerciales')
+            
+            # Affichage du graphique
+            st.pyplot(fig)
+        else:
+            st.warning("Aucune charge facturée n'a été identifiée.")
 
-        # Visualisation graphique des thèmes
-        if len(analysis["themes"]) > 1:
-            st.subheader("Visualisation des thèmes")
-            fig = plot_themes_chart(analysis["themes"])
-            if fig:
-                st.pyplot(fig)
-
-        # Afficher l'analyse des documents dans des onglets
-        doc1_tab, doc2_tab = st.tabs(["Analyse des clauses du bail", "Analyse des charges facturées"])
+        # Section 3: Charges contestables
+        st.markdown("## Charges potentiellement contestables")
+        if "charges_facturees" in analysis:
+            contestable_charges = [c for c in analysis["charges_facturees"] if c.get("contestable")]
+            if contestable_charges:
+                for charge in contestable_charges:
+                    with st.expander(f"{charge['poste']} ({charge['montant']}€)"):
+                        st.markdown(f"**Montant:** {charge['montant']}€ ({charge['pourcentage']}% du total)")
+                        st.markdown(f"**Raison:** {charge.get('raison_contestation', 'Non spécifiée')}")
+                        st.markdown(f"**Justification:** {charge.get('justification', '')}")
+            else:
+                st.success("Aucune charge contestable n'a été identifiée.")
         
-        with doc1_tab:
-            for section in analysis["clauses_analysis"]:
-                with st.expander(section["title"]):
-                    st.markdown(section["content"])
-        
-        with doc2_tab:
-            # Créer DataFrame pour affichage des charges
-            if "charges_analysis" in analysis and analysis["charges_analysis"]:
-                charges_df = pd.DataFrame([
-                    {
-                        "Poste": charge["poste"],
-                        "Montant (€)": charge["montant"],
-                        "% du total": f"{charge['pourcentage']:.1f}%",
-                        "Conformité": charge["conformite"],
-                        "Contestable": "Oui" if charge["contestable"] else "Non"
-                    }
-                    for charge in analysis["charges_analysis"]
-                ])
-                
-                st.dataframe(charges_df)
-                
-                # Détails des charges contestables
-                contestable_charges = [c for c in analysis["charges_analysis"] if c.get("contestable")]
-                if contestable_charges:
-                    st.subheader("Charges potentiellement contestables")
-                    for charge in contestable_charges:
-                        with st.expander(f"{charge['poste']} ({charge['montant']}€)"):
-                            st.markdown(f"**Raison:** {charge['raison_contestation']}")
-                            st.markdown(f"**Détails:** {charge['details']}")
-
-        # Recommandations
-        st.subheader("Recommandations")
-        for i, rec in enumerate(analysis["recommandations"]):
-            st.markdown(f"{i+1}. {rec}")
+        # Section 4: Recommandations
+        st.markdown("## Recommandations")
+        if "recommandations" in analysis and analysis["recommandations"]:
+            for i, rec in enumerate(analysis["recommandations"]):
+                st.markdown(f"{i+1}. {rec}")
+        else:
+            st.info("Aucune recommandation spécifique.")
 
         # Options d'export
         st.header("Exporter les résultats")
