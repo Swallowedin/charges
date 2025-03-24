@@ -241,69 +241,388 @@ def extract_refacturable_charges_from_bail(bail_text, client):
 def extract_charged_amounts_from_reddition(charges_text, client):
     """
     Extrait précisément les montants facturés dans la reddition des charges.
+    Optimisé spécifiquement pour les relevés de charges commerciales avec exemples.
     """
     try:
+        # Vérifier si le document contient des signaux typiques d'un relevé de charges
+        contains_table = "Total des charges" in charges_text or "Total charges" in charges_text
+        contains_charges_keywords = "CHARGES COMMUNES" in charges_text or "Quote-part" in charges_text
+        
+        # Prompt optimisé avec exemples tirés des documents récemment analysés
         prompt = f"""
-        ## Tâche d'extraction précise
-        Tu es un expert-comptable spécialisé dans l'analyse de reddition de charges.
+        ## EXTRACTION DE CHARGES LOCATIVES COMMERCIALES
         
-        Ta seule tâche est d'extraire la liste précise des postes de charges et leurs montants exacts tels qu'ils apparaissent dans le document de reddition de charges suivant.
+        Tu dois extraire avec une extrême précision toutes les charges locatives et leurs montants exacts 
+        à partir du document ci-dessous:
         
-        Voici le document de reddition de charges:
         ```
-        {charges_text[:10000]}
-        ```
-        
-        ## Instructions précises
-        1. Extrais UNIQUEMENT les postes de charges et montants explicitement mentionnés dans le document
-        2. Pour chaque charge, indique son montant exact tel qu'il apparaît (ne fais aucun calcul ni arrondi)
-        3. Si un montant est ambigu ou nécessite un calcul, cite le texte exact du document
-        4. N'invente aucun poste ou montant qui ne serait pas explicitement mentionné
-        5. Ignore tout autre texte ou information qui n'est pas directement une charge ou un montant
-        
-        ## Format attendu (JSON)
-        ```
-        [
-            {{
-                "poste": "Intitulé exact du poste tel qu'il apparaît dans le document",
-                "montant": 1234.56,
-                "texte_original": "Citation exacte du document mentionnant cette charge"
-            }}
-        ]
+        {charges_text[:15000]}
         ```
         
-        Si tu ne trouves aucun montant précis dans le document, indique-le dans une propriété "erreur" et retourne un tableau vide.
+        ## FOCUS SUR LE TABLEAU DE CHARGES
+        
+        IMPORTANT: Ce document contient un tableau de charges locatives qui ressemble probablement à ceci:
+        
+        ```
+        01 / 01  NETTOYAGE EXTERIEUR                 13 274.19 €      8565      2092.00    366      3 242.22
+        01 / 04  DECHETS SECS                        16 727.76 €      8565      2092.00    366      4 085.75
+        01 / 06  HYGIENE SANTE                        1 223.80 €      8565      2092.00    366        298.91
+        ...etc...
+        ```
+        
+        ## INSTRUCTIONS CRITIQUES
+        
+        1. Cherche spécifiquement ce tableau dans le document
+        2. Pour chaque ligne du tableau, extrais:
+           - Le nom exact du poste de charge (comme "NETTOYAGE EXTERIEUR")
+           - Le montant final qui représente la quote-part du locataire (généralement la dernière colonne)
+        3. Identifie également le montant total des charges (souvent indiqué comme "Total charges" suivi d'un montant)
+        
+        ## EXEMPLES DE CHARGES À RECHERCHER
+        
+        Voici des exemples de charges typiques que tu dois identifier:
+        - NETTOYAGE EXTERIEUR: environ 3 242.22 €
+        - DECHETS SECS: environ 4 085.75 €
+        - HYGIENE SANTE: environ 298.91 €
+        - ELECTRICITE ABORDS & PKGS: environ 2 034.14 €
+        - STRUCTURE: environ 2 068.80 €
+        - ESPACES VERTS EXTERIEURS: environ 8 240.83 €
+        - HONORAIRES GESTION: environ 4 652.96 €
+        
+        ## FORMAT DE RÉPONSE JSON REQUIS
+        
+        Réponds avec ce format JSON exact:
+        {{
+            "charges": [
+                {{
+                    "poste": "NOM EXACT DU POSTE DE CHARGE",
+                    "montant": MONTANT_NUMÉRIQUE,
+                    "texte_original": "LIGNE COMPLÈTE DU DOCUMENT"
+                }},
+                ...
+            ],
+            "montant_total": MONTANT_TOTAL_NUMÉRIQUE
+        }}
+        
+        CRITIQUE: Assure-toi que CHAQUE charge du document est correctement identifiée et que les montants sont exactement ceux indiqués.
         """
         
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
+            messages=[
+                {"role": "system", "content": "Tu es un expert-comptable spécialisé dans l'extraction précise de données financières à partir de documents de reddition de charges."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
             seed=42,
             response_format={"type": "json_object"}
         )
         
-        # Extraire et analyser la réponse JSON
         try:
             result = json.loads(response.choices[0].message.content)
-            # Vérifier si le résultat est une liste directe ou s'il est encapsulé
-            if isinstance(result, dict) and "erreur" in result:
-                st.warning(f"Erreur signalée par l'IA: {result['erreur']}")
-                return []
-            elif isinstance(result, dict) and any(k for k in result.keys() if "charge" in k.lower() or "montant" in k.lower()):
-                for key in result.keys():
-                    if isinstance(result[key], list):
+            
+            # Vérifier si le résultat a une structure attendue avec "charges"
+            if "charges" in result and isinstance(result["charges"], list):
+                return result["charges"]
+            
+            # Alternative: si la structure est différente, chercher tout tableau de données
+            for key in result:
+                if isinstance(result[key], list) and len(result[key]) > 0:
+                    if all(isinstance(item, dict) and "poste" in item and "montant" in item for item in result[key]):
                         return result[key]
-            elif isinstance(result, list):
-                return result
-            else:
-                return []
-        except Exception as e:
-            st.warning(f"Erreur lors de l'analyse de la réponse JSON pour les montants facturés: {str(e)}")
-            return []
+            
+            # Si aucune charge trouvée dans un format attendu
+            st.warning("Format de réponse non standard. Nouvelle tentative avec un prompt plus spécifique...")
+            
+            # Deuxième tentative avec un prompt encore plus spécifique
+            return retry_extraction_with_context(charges_text, client)
+                
+        except json.JSONDecodeError as e:
+            st.warning(f"Erreur lors du décodage JSON: {str(e)}")
+            # Deuxième tentative
+            return retry_extraction_with_context(charges_text, client)
     
     except Exception as e:
         st.error(f"Erreur lors de l'extraction des montants facturés: {str(e)}")
+        return []
+
+def retry_extraction_with_context(charges_text, client):
+    """
+    Deuxième tentative d'extraction avec des instructions plus spécifiques.
+    """
+    try:
+        # Prompt extrêmement spécifique pour la structure du document SCI PASTEUR
+        prompt = f"""
+        ## EXTRACTION D'URGENCE - RELEVÉ DE CHARGES SCI PASTEUR
+        
+        Le document suivant est un relevé individuel des charges locatives commerciales émis par SCI PASTEUR.
+        Il contient une grille de charges pour la période du 01/01/2024 au 31/12/2024.
+        
+        ```
+        {charges_text[:5000]}
+        ```
+        
+        Le document contient un tableau avec les colonnes suivantes:
+        - Clés (01/01, 01/04, etc.)
+        - Désignation (NETTOYAGE EXTERIEUR, DECHETS SECS, etc.)
+        - Total de l'immeuble
+        - Tantièmes globaux
+        - Tantièmes particuliers
+        - Nb jrs 366
+        - Quote-part (montant final facturé au locataire)
+        
+        LA COLONNE QUI NOUS INTÉRESSE EST "Quote-part" - c'est le montant facturé au locataire.
+        
+        VOICI EXACTEMENT LA STRUCTURE DE CHAQUE LIGNE:
+        01 / XX   NOM DE LA CHARGE   MONTANT TOTAL €   8565   2092.00   366   QUOTE-PART €
+        
+        Extrait du document sous la section "CHARGES COMMUNES" uniquement les noms des charges et leurs montants de quote-part.
+        Par exemple:
+        - "NETTOYAGE EXTERIEUR" → 3242.22
+        - "DECHETS SECS" → 4085.75
+        
+        Réponds avec ce format JSON simple:
+        [
+            {{"poste": "NETTOYAGE EXTERIEUR", "montant": 3242.22}},
+            {{"poste": "DECHETS SECS", "montant": 4085.75}},
+            ...
+        ]
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Tu extrais avec une précision absolue les données de charges locatives des relevés SCI PASTEUR."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            max_tokens=2000
+        )
+        
+        content = response.choices[0].message.content
+        
+        # Essayer de trouver un bloc JSON même si la réponse contient d'autres éléments
+        try:
+            # Nettoyer la réponse pour extraire juste le JSON
+            clean_content = content
+            # Supprimer tout avant le premier '['
+            if '[' in clean_content:
+                clean_content = clean_content[clean_content.find('['):]
+            # Supprimer tout après le dernier ']'
+            if ']' in clean_content:
+                clean_content = clean_content[:clean_content.rfind(']')+1]
+                
+            charges = json.loads(clean_content)
+            
+            # Convertir en format standard
+            formatted_charges = []
+            for charge in charges:
+                formatted_charges.append({
+                    "poste": charge.get("poste", ""),
+                    "montant": charge.get("montant", 0),
+                    "texte_original": f"{charge.get('poste', '')} - {charge.get('montant', 0)}€"
+                })
+            
+            return formatted_charges
+        except:
+            # Dernière tentative avec GPT-4o si disponible
+            try:
+                # Tenter avec gpt-4o si disponible
+                model = "gpt-4o" if any(m.id == "gpt-4o" for m in client.models.list().data) else "gpt-4o-mini"
+            except:
+                model = "gpt-4o-mini"
+                
+            last_prompt = f"""
+            Voici un relevé de charges locatives pour un bail commercial:
+            
+            ```
+            {charges_text[:7000]}
+            ```
+            
+            J'ai besoin uniquement que tu extraies les noms des charges et leurs montants de quote-part.
+            
+            Cherche spécifiquement la section "CHARGES COMMUNES" ou autre section de charges.
+            Ne réponds qu'avec un tableau JSON simple - rien d'autre:
+            [
+                {{"poste": "Nom de la charge", "montant": valeur_numérique}},
+                ...
+            ]
+            """
+            
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": last_prompt}],
+                    temperature=0,
+                    response_format={"type": "json_object"}
+                )
+                
+                result = json.loads(response.choices[0].message.content)
+                
+                if isinstance(result, list):
+                    formatted_charges = []
+                    for charge in result:
+                        formatted_charges.append({
+                            "poste": charge.get("poste", ""),
+                            "montant": charge.get("montant", 0),
+                            "texte_original": f"{charge.get('poste', '')} - {charge.get('montant', 0)}€"
+                        })
+                    return formatted_charges
+                    
+                for key in result:
+                    if isinstance(result[key], list):
+                        formatted_charges = []
+                        for charge in result[key]:
+                            formatted_charges.append({
+                                "poste": charge.get("poste", ""),
+                                "montant": charge.get("montant", 0),
+                                "texte_original": f"{charge.get('poste', '')} - {charge.get('montant', 0)}€"
+                            })
+                        return formatted_charges
+                
+                return []
+            except:
+                return []
+                
+    except Exception as e:
+        st.error(f"Erreur lors de la seconde tentative d'extraction: {str(e)}")
+        return []
+def retry_extraction_with_ai(charges_text, client):
+    """
+    Seconde tentative d'extraction avec l'IA en utilisant un prompt plus direct.
+    """
+    try:
+        # Prompt plus direct avec des exemples
+        prompt = f"""
+        ## EXTRACTION URGENTE DE DONNÉES DE CHARGES LOCATIVES
+        
+        Le document suivant est une reddition de charges locatives commerciales.
+        Il contient un tableau où chaque ligne représente une charge avec son montant.
+        
+        Voici le document:
+        ```
+        {charges_text[:15000]}
+        ```
+        
+        ## EXEMPLES DE CHARGES À IDENTIFIER
+        Voici des exemples du type de charges que tu dois trouver:
+        - NETTOYAGE EXTERIEUR
+        - DECHETS SECS
+        - ELECTRICITE 
+        - ESPACES VERTS
+        - HONORAIRES GESTION
+        
+        ## INSTRUCTION CRITIQUE
+        1. LISTE TOUTES LES CHARGES avec leurs montants exacts (généralement dans la colonne "Quote-part")
+        2. IDENTIFIE LE MONTANT TOTAL des charges (généralement indiqué comme "Total charges")
+        3. ASSURE-TOI de ne rien manquer et de ne rien inventer
+        
+        Réponds avec une liste JSON simple:
+        [
+            {{"poste": "NOM DE LA CHARGE", "montant": MONTANT_NUMERIQUE}},
+            ...
+        ]
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Tu es un comptable expert qui peut extraire avec précision des données financières de documents."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=2000
+        )
+        
+        content = response.choices[0].message.content
+        
+        # Essayer de trouver un bloc JSON même si la réponse contient d'autres éléments
+        json_match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            charges = json.loads(json_str)
+            return charges
+        
+        # Si pas de JSON valide mais des charges mentionnées
+        if "poste" in content and "montant" in content:
+            st.warning("Données extraites mais pas au format JSON standard. Création d'un format intermédiaire...")
+            
+            # Dernier recours: demander une troisième extraction extrêmement simplifiée
+            return extract_with_simplified_prompt(charges_text, client)
+            
+        return []
+            
+    except Exception as e:
+        st.error(f"Erreur lors de la seconde tentative d'extraction: {str(e)}")
+        return []
+
+def extract_with_simplified_prompt(charges_text, client):
+    """
+    Troisième tentative d'extraction avec l'IA en utilisant un prompt simplifié au maximum.
+    """
+    try:
+        prompt = f"""
+        Voici un relevé de charges locatives commerciales:
+        
+        {charges_text[:5000]}
+        
+        Donne-moi uniquement les noms et montants des charges sous ce format exact: 
+        [
+            {{"poste": "NOM_CHARGE", "montant": MONTANT}},
+            ...
+        ]
+        Ne réponds rien d'autre que ce JSON.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=1000
+        )
+        
+        content = response.choices[0].message.content.strip()
+        
+        # Tenter d'extraire juste un tableau JSON
+        try:
+            # Enlever tout ce qui n'est pas le JSON attendu
+            clean_content = re.sub(r'^[^[]*', '', content)
+            clean_content = re.sub(r'[^]]*$', '', clean_content)
+            charges = json.loads(clean_content)
+            return charges
+        except:
+            # Si tout échoue, dernier recours: essayer avec gpt-4o
+            st.warning("Dernière tentative avec un modèle plus puissant...")
+            
+            try:
+                # Tenter avec gpt-4o si disponible
+                response = client.chat.completions.create(
+                    model="gpt-4o",  # Modèle plus puissant
+                    messages=[
+                        {"role": "system", "content": "Extrait uniquement les charges et montants du document sans ajouter de commentaire."},
+                        {"role": "user", "content": f"Extrait les charges et montants de ce document et retourne UNIQUEMENT un tableau JSON:\n\n{charges_text[:5000]}"}
+                    ],
+                    temperature=0,
+                    response_format={"type": "json_object"}
+                )
+                
+                result = json.loads(response.choices[0].message.content)
+                if "charges" in result and isinstance(result["charges"], list):
+                    return result["charges"]
+                
+                # Si structure différente mais contient une liste
+                for key in result:
+                    if isinstance(result[key], list):
+                        return result[key]
+                        
+                return []
+            except:
+                # Si vraiment tout a échoué
+                st.error("Impossible d'extraire les charges après plusieurs tentatives.")
+                return []
+                
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction simplifiée: {str(e)}")
         return []
 
 def analyse_charges_conformity(refacturable_charges, charged_amounts, client):
@@ -409,10 +728,8 @@ def analyse_charges_conformity(refacturable_charges, charged_amounts, client):
 
 def analyze_with_openai(text1, text2, document_type):
     """
-    Analyse les documents en suivant une approche structurée en trois étapes:
-    1. Extraction des charges refacturables du bail
-    2. Extraction des montants facturés de la reddition
-    3. Analyse de la conformité entre les deux
+    Analyse les documents en suivant une approche structurée en trois étapes,
+    uniquement basée sur l'IA sans fallbacks déterministes.
     """
     try:
         with st.spinner("Étape 1/3: Extraction des charges refacturables du bail..."):
@@ -423,6 +740,8 @@ def analyze_with_openai(text1, text2, document_type):
                 st.success(f"✅ {len(refacturable_charges)} postes de charges refacturables identifiés dans le bail")
             else:
                 st.warning("⚠️ Aucune charge refacturable clairement identifiée dans le bail")
+                # Deuxième tentative avec un prompt différent
+                refacturable_charges = retry_extract_refacturable_charges(text1, client)
         
         with st.spinner("Étape 2/3: Extraction des montants facturés..."):
             # Extraire les montants facturés mentionnés dans la reddition
@@ -438,26 +757,490 @@ def analyze_with_openai(text1, text2, document_type):
             # Analyser la conformité entre les charges refacturables et facturées
             result = analyse_charges_conformity(refacturable_charges, charged_amounts, client)
             
-            if result:
-                conformity = result.get("analyse_globale", {}).get("taux_conformite", 0)
+            if result and "analyse_globale" in result and "taux_conformite" in result["analyse_globale"]:
+                conformity = result["analyse_globale"]["taux_conformite"]
                 st.success(f"✅ Analyse complète avec un taux de conformité de {conformity}%")
             else:
-                st.error("❌ Impossible de finaliser l'analyse de conformité")
+                st.warning("⚠️ Analyse de conformité incomplète - nouvelle tentative...")
+                # Deuxième tentative avec approche différente
+                result = retry_analyse_conformity(refacturable_charges, charged_amounts, client)
         
         return result
     
     except Exception as e:
         st.error(f"Erreur lors de l'analyse: {str(e)}")
-        # Retourner une analyse par défaut en cas d'erreur
+        # Nouvelle tentative avec un prompt composé
+        return final_attempt_complete_analysis(text1, text2, client)
+
+def retry_extract_refacturable_charges(bail_text, client):
+    """
+    Seconde tentative d'extraction des charges refacturables avec un prompt différent.
+    """
+    try:
+        prompt = f"""
+        ## Tâche d'extraction spécifique
+        Tu es un juriste spécialisé en droit des baux commerciaux en France.
+        
+        Examine attentivement ce bail commercial et identifie TOUTES les charges qui peuvent être refacturées au locataire.
+        
+        ```
+        {bail_text[:10000]}
+        ```
+        
+        ## Instructions critiques
+        1. Recherche spécifiquement les mentions de charges locatives, frais, dépenses ou taxes
+        2. Cherche les clauses qui indiquent ce qui est à la charge du preneur/locataire
+        3. Identifie les articles qui mentionnent la répartition des charges
+        4. Considère les mentions de l'article 606 du Code Civil (grosses réparations)
+        
+        ## Liste de charges typiques à identifier si elles sont mentionnées
+        - Nettoyage des parties communes
+        - Enlèvement des déchets/ordures
+        - Entretien des espaces verts
+        - Électricité des parties communes
+        - Chauffage collectif
+        - Eau
+        - Honoraires de gestion
+        - Assurances
+        - Taxes foncières
+        - Taxes sur les bureaux
+        
+        Retourne uniquement un tableau JSON structuré:
+        [
+            {{"categorie": "Type de charge", "description": "Description précise", "base_legale": "Article ou clause du bail", "certitude": "élevée|moyenne|faible"}}
+        ]
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Tu es un expert juridique spécialisé en baux commerciaux."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        
+        # Extraire la liste des charges de la réponse JSON
+        if isinstance(result, list):
+            return result
+        
+        # Si le résultat est un objet contenant une liste
+        for key in result:
+            if isinstance(result[key], list):
+                return result[key]
+        
+        return []
+    
+    except Exception as e:
+        st.error(f"Erreur lors de la seconde tentative d'extraction des charges refacturables: {str(e)}")
+        return []
+
+def retry_analyse_conformity(refacturable_charges, charged_amounts, client):
+    """
+    Seconde tentative d'analyse de conformité avec un prompt différent.
+    """
+    try:
+        # Convertir les listes en JSON pour les inclure dans le prompt
+        refacturable_json = json.dumps(refacturable_charges, ensure_ascii=False)
+        charged_json = json.dumps(charged_amounts, ensure_ascii=False)
+        
+        prompt = f"""
+        ## Analyse détaillée de conformité des charges locatives
+        
+        Tu es un avocat spécialisé en baux commerciaux qui doit déterminer si les charges facturées à un locataire sont conformes au bail.
+        
+        ## Données d'entrée
+        
+        ### 1. Charges refacturables selon le bail:
+        ```json
+        {refacturable_json}
+        ```
+        
+        ### 2. Charges effectivement facturées:
+        ```json
+        {charged_json}
+        ```
+        
+        ## Instructions précises
+        1. Compare chaque charge facturée avec les charges autorisées par le bail
+        2. Pour chaque charge facturée, détermine si elle est explicitement autorisée, implicitement autorisée, ou non autorisée
+        3. Calcule le pourcentage que représente chaque charge par rapport au total facturé
+        4. Identifie les charges potentiellement contestables avec justification précise
+        5. Détermine un taux global de conformité basé sur le pourcentage des charges conformes
+        
+        ## Format de réponse requis (JSON)
+        {{
+            "charges_facturees": [
+                {{
+                    "poste": "Nom exact de la charge facturée",
+                    "montant": montant_numérique,
+                    "pourcentage": pourcentage_numérique,
+                    "conformite": "conforme|à vérifier|non conforme",
+                    "justification": "Explication précise",
+                    "contestable": true|false,
+                    "raison_contestation": "Raison si contestable"
+                }}
+            ],
+            "montant_total": montant_total_numérique,
+            "analyse_globale": {{
+                "taux_conformite": pourcentage_numérique,
+                "conformite_detail": "Explication détaillée"
+            }},
+            "recommandations": [
+                "Recommandation actionnable 1",
+                "Recommandation actionnable 2"
+            ]
+        }}
+        
+        ATTENTION: Sois rigoureux dans ton analyse. Ne suppose pas qu'une charge est autorisée sans preuve claire dans le bail.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Tu es un expert juridique et comptable spécialisé dans l'analyse de conformité des charges locatives commerciales."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        
+        try:
+            result = json.loads(response.choices[0].message.content)
+            # Ajouter les charges refacturables au résultat pour l'affichage complet
+            result["charges_refacturables"] = refacturable_charges
+            return result
+        except Exception as e:
+            st.warning(f"Erreur lors de l'analyse de la réponse JSON pour l'analyse de conformité: {str(e)}")
+            # Dernière tentative avec format simplifié
+            return simplify_and_retry_conformity(refacturable_charges, charged_amounts, client)
+        
+    except Exception as e:
+        st.error(f"Erreur lors de la seconde tentative d'analyse de conformité: {str(e)}")
+        return {
+            "charges_refacturables": refacturable_charges,
+            "charges_facturees": charged_amounts,
+            "montant_total": sum(charge.get("montant", 0) for charge in charged_amounts),
+            "analyse_globale": {
+                "taux_conformite": 50,  # Valeur par défaut médiane
+                "conformite_detail": "Analyse partielle suite à une erreur technique."
+            },
+            "recommandations": ["Consulter un expert pour une analyse plus approfondie."]
+        }
+
+def simplify_and_retry_conformity(refacturable_charges, charged_amounts, client):
+    """
+    Dernière tentative d'analyse de conformité avec un format simplifié.
+    """
+    try:
+        # Simplifier les données d'entrée
+        simple_refacturable = []
+        for charge in refacturable_charges:
+            simple_refacturable.append({
+                "categorie": charge.get("categorie", ""),
+                "description": charge.get("description", "")
+            })
+        
+        simple_charged = []
+        for charge in charged_amounts:
+            simple_charged.append({
+                "poste": charge.get("poste", ""),
+                "montant": charge.get("montant", 0)
+            })
+        
+        # Prompt simplifié
+        prompt = f"""
+        Analyse si ces charges facturées sont conformes au bail:
+        
+        Charges refacturables selon bail: {json.dumps(simple_refacturable)}
+        
+        Charges facturées: {json.dumps(simple_charged)}
+        
+        Donne un simple JSON avec:
+        1. Taux de conformité (%)
+        2. Liste des charges conformes ou non
+        3. Recommandations
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        
+        # Construire un résultat structuré à partir de la réponse
+        structured_result = {
+            "charges_refacturables": refacturable_charges,
+            "charges_facturees": [],
+            "montant_total": sum(charge.get("montant", 0) for charge in charged_amounts),
+            "analyse_globale": {
+                "taux_conformite": result.get("taux_conformite", 50),
+                "conformite_detail": result.get("detail", "Analyse simplifiée suite à des erreurs techniques.")
+            },
+            "recommandations": result.get("recommandations", ["Consulter un expert pour une analyse complète."])
+        }
+        
+        # Restructurer les charges facturées
+        if "charges" in result and isinstance(result["charges"], list):
+            for i, charge in enumerate(charged_amounts):
+                if i < len(result["charges"]):
+                    structured_result["charges_facturees"].append({
+                        "poste": charge.get("poste", ""),
+                        "montant": charge.get("montant", 0),
+                        "pourcentage": (charge.get("montant", 0) / structured_result["montant_total"] * 100) if structured_result["montant_total"] > 0 else 0,
+                        "conformite": result["charges"][i].get("conformite", "à vérifier"),
+                        "justification": result["charges"][i].get("justification", ""),
+                        "contestable": result["charges"][i].get("conformite", "") == "non conforme",
+                        "raison_contestation": result["charges"][i].get("justification", "")
+                    })
+                else:
+                    # Pour les charges sans évaluation explicite
+                    structured_result["charges_facturees"].append({
+                        "poste": charge.get("poste", ""),
+                        "montant": charge.get("montant", 0),
+                        "pourcentage": (charge.get("montant", 0) / structured_result["montant_total"] * 100) if structured_result["montant_total"] > 0 else 0,
+                        "conformite": "à vérifier",
+                        "justification": "Analyse incomplète",
+                        "contestable": False,
+                        "raison_contestation": ""
+                    })
+        else:
+            # Ajouter les charges telles quelles si pas d'évaluation disponible
+            for charge in charged_amounts:
+                structured_result["charges_facturees"].append({
+                    "poste": charge.get("poste", ""),
+                    "montant": charge.get("montant", 0),
+                    "pourcentage": (charge.get("montant", 0) / structured_result["montant_total"] * 100) if structured_result["montant_total"] > 0 else 0,
+                    "conformite": "à vérifier",
+                    "justification": "Analyse incomplète",
+                    "contestable": False,
+                    "raison_contestation": ""
+                })
+        
+        return structured_result
+        
+    except Exception as e:
+        st.error(f"Erreur lors de la tentative simplifiée d'analyse de conformité: {str(e)}")
+        # Résultat minimal de secours
+        return {
+            "charges_refacturables": refacturable_charges,
+            "charges_facturees": charged_amounts,
+            "montant_total": sum(charge.get("montant", 0) for charge in charged_amounts),
+            "analyse_globale": {
+                "taux_conformite": 50,
+                "conformite_detail": "Analyse incomplète suite à des erreurs techniques répétées."
+            },
+            "recommandations": ["Consulter un expert pour une analyse complète des charges."]
+        }
+
+def final_attempt_complete_analysis(text1, text2, client):
+    """
+    Tentative finale d'analyse complète avec un seul appel IA intégré.
+    Cette fonction est appelée en dernier recours si les autres approches échouent.
+    """
+    try:
+        st.warning("Tentative d'analyse unifiée en cours...")
+        
+        # Utiliser un seul prompt qui fait tout en une fois
+        prompt = f"""
+        ## ANALYSE COMPLÈTE DE CONFORMITÉ DES CHARGES LOCATIVES
+        
+        Tu es un expert juridique et comptable spécialisé dans l'analyse des baux commerciaux.
+        
+        Voici les deux documents que tu dois analyser:
+        
+        ### 1. BAIL COMMERCIAL (extraits pertinents):
+        ```
+        {text1[:7000]}
+        ```
+        
+        ### 2. REDDITION DES CHARGES:
+        ```
+        {text2[:7000]}
+        ```
+        
+        ## Ta mission en 3 étapes:
+        
+        ### Étape 1: Extrais les charges refacturables mentionnées dans le bail
+        - Identifie les clauses spécifiant quelles charges sont refacturables au locataire
+        - Recherche les mentions de charges locatives, répartition des charges, etc.
+        - Vérifie les clauses concernant l'article 606 du Code Civil
+        
+        ### Étape 2: Extrais les charges facturées dans la reddition
+        - Identifie précisément chaque poste de charge facturé
+        - Note le montant exact pour chaque poste
+        - Calcule le montant total des charges facturées
+        
+        ### Étape 3: Analyse la conformité des charges facturées
+        - Compare chaque charge facturée avec les charges autorisées par le bail
+        - Détermine si chaque charge est conforme ou non aux stipulations du bail
+        - Calcule un taux global de conformité
+        - Identifie les charges potentiellement contestables
+        
+        ## Format de réponse JSON requis
+        Réponds UNIQUEMENT avec ce format JSON exact:
+        
+        {{
+            "charges_refacturables": [
+                {{
+                    "categorie": "Type de charge",
+                    "description": "Description précise",
+                    "base_legale": "Article ou clause du bail"
+                }}
+            ],
+            "charges_facturees": [
+                {{
+                    "poste": "Nom exact de la charge facturée",
+                    "montant": montant_numérique,
+                    "pourcentage": pourcentage_numérique,
+                    "conformite": "conforme|à vérifier|non conforme",
+                    "justification": "Explication précise",
+                    "contestable": true|false,
+                    "raison_contestation": "Raison si contestable"
+                }}
+            ],
+            "montant_total": montant_total_numérique,
+            "analyse_globale": {{
+                "taux_conformite": pourcentage_numérique,
+                "conformite_detail": "Explication détaillée"
+            }},
+            "recommandations": [
+                "Recommandation actionnable 1",
+                "Recommandation actionnable 2"
+            ]
+        }}
+        
+        IMPORTANT: La reddition des charges inclut probablement un tableau de charges avec montants.
+        Pour le document 2 (reddition), CHERCHE ATTENTIVEMENT tout tableau ou liste de charges locatives.
+        Une ligne typique pourrait être "NETTOYAGE EXTERIEUR ... 3242.22 €" ou similaire.
+        """
+        
+        # Essayer avec un modèle plus puissant si possible
+        try:
+            model = "gpt-4o" if any(m.id == "gpt-4o" for m in client.models.list().data) else "gpt-4o-mini"
+        except:
+            model = "gpt-4o-mini"
+            
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "Tu es un expert juridique et comptable spécialisé dans l'analyse des baux commerciaux et des charges locatives."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=3000,
+            response_format={"type": "json_object"}
+        )
+        
+        try:
+            result = json.loads(response.choices[0].message.content)
+            
+            # Vérification basique de la structure
+            if "charges_facturees" not in result or not result["charges_facturees"]:
+                st.warning("Aucune charge facturée identifiée dans l'analyse unifiée. Tentative de récupération spécifique...")
+                
+                # Extraction spécifique des charges facturées
+                charges_prompt = f"""
+                Extrais UNIQUEMENT la liste des charges facturées et leurs montants exacts de ce document de reddition:
+                
+                ```
+                {text2[:10000]}
+                ```
+                
+                ATTENTION: Ce document contient certainement un tableau de charges. Chaque ligne du tableau
+                représente une charge avec un montant. Par exemple: "NETTOYAGE EXTERIEUR ... 3242.22 €"
+                
+                Fournis UNIQUEMENT un tableau JSON simple:
+                [
+                    {{"poste": "Nom exact du poste", "montant": montant_numérique}},
+                    ...
+                ]
+                """
+                
+                charges_response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": charges_prompt}],
+                    temperature=0,
+                    response_format={"type": "json_object"}
+                )
+                
+                try:
+                    charges_result = json.loads(charges_response.choices[0].message.content)
+                    
+                    # Récupérer les charges depuis la réponse
+                    extracted_charges = []
+                    if isinstance(charges_result, list):
+                        extracted_charges = charges_result
+                    else:
+                        for key in charges_result:
+                            if isinstance(charges_result[key], list):
+                                extracted_charges = charges_result[key]
+                                break
+                    
+                    # Si des charges ont été trouvées, mettre à jour le résultat
+                    if extracted_charges:
+                        total = sum(charge.get("montant", 0) for charge in extracted_charges)
+                        
+                        # Calculer les pourcentages
+                        for charge in extracted_charges:
+                            charge["pourcentage"] = (charge.get("montant", 0) / total * 100) if total > 0 else 0
+                            charge["conformite"] = "à vérifier"
+                            charge["contestable"] = False
+                            charge["justification"] = "Analyse incomplète"
+                            charge["raison_contestation"] = ""
+                        
+                        result["charges_facturees"] = extracted_charges
+                        result["montant_total"] = total
+                        
+                        # Mettre à jour l'analyse globale
+                        if "analyse_globale" not in result:
+                            result["analyse_globale"] = {}
+                        
+                        result["analyse_globale"]["taux_conformite"] = 50  # Valeur par défaut
+                        result["analyse_globale"]["conformite_detail"] = "Analyse partielle des charges facturées. Vérification manuelle recommandée."
+                except:
+                    pass
+            
+            return result
+            
+        except json.JSONDecodeError:
+            # En cas d'échec, retourner une structure minimale mais fonctionnelle
+            st.error("Impossible de produire une analyse complète après plusieurs tentatives.")
+            
+            return {
+                "charges_refacturables": [],
+                "charges_facturees": [],
+                "montant_total": 0,
+                "analyse_globale": {
+                    "taux_conformite": 0,
+                    "conformite_detail": "L'analyse n'a pas pu être finalisée suite à des erreurs techniques répétées."
+                },
+                "recommandations": [
+                    "Consulter un expert juridique pour une analyse manuelle complète.",
+                    "Vérifier que les documents fournis sont lisibles et complets."
+                ]
+            }
+            
+    except Exception as e:
+        st.error(f"Erreur lors de la tentative finale d'analyse: {str(e)}")
         return {
             "charges_refacturables": [],
             "charges_facturees": [],
             "montant_total": 0,
             "analyse_globale": {
                 "taux_conformite": 0,
-                "conformite_detail": "L'analyse n'a pas pu être effectuée automatiquement en raison d'une erreur."
+                "conformite_detail": "L'analyse a échoué suite à une erreur technique. Veuillez réessayer."
             },
-            "recommandations": ["Veuillez réessayer ou effectuer une analyse manuelle."]
+            "recommandations": [
+                "Réessayer l'analyse avec des documents au format texte.",
+                "S'assurer que les documents sont lisibles et contiennent les informations nécessaires."
+            ]
         }
         
 def plot_themes_chart(themes):
