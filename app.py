@@ -152,7 +152,7 @@ def extract_charges_clauses_with_ai(bail_text, client):
             model="gpt-4o-mini",  # Utilisation de gpt-4o-mini comme demandé
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,  # Faible température pour des résultats cohérents
-            max_tokens=2000,  # Limite raisonnable pour l'extraction
+            max_tokens=10000,  # Limite raisonnable pour l'extraction
         )
         
         extracted_text = response.choices[0].message.content.strip()
@@ -257,23 +257,12 @@ def extract_charged_amounts_from_reddition(charges_text, client):
     
     ## INSTRUCTIONS
     
-    1. Identifie le tableau dans le document qui liste les charges et leur quote-part
-    2. Pour chaque ligne du tableau, extrais précisément:
+    1. Identifie les différentes charges dans le document qui liste les charges et leur quote-part
+    2. extraitds précisément
        - Le nom exact de la charge (ex: "NETTOYAGE EXTERIEUR")
-       - Le montant de la quote-part (le dernier montant sur la ligne, ex: 3 242.22)
-    3. Identifie également le montant TOTAL des charges
-    
-    ## FORMAT DE RÉPONSE SIMPLIFIÉ
-    
-    Réponds exactement avec ce format JSON:
-    {{
-        "charges": [
-            {{ "poste": "NETTOYAGE EXTERIEUR", "montant": 3242.22 }},
-            {{ "poste": "DECHETS SECS", "montant": 4085.75 }},
-            ...
-        ],
-        "total": 32905.21
-    }}
+       - Le montant facturé (HT et TTC si il y ales deux )
+    3. Identifie également le montant TOTAL des charges en HT et TTC
+    4. Continue tant que tu n'identifies pas de charges. Il y en a toujours.
     
     ATTENTION: Assure-toi que les montants sont des nombres décimaux sans symbole € ou autres caractères.
     """
@@ -281,7 +270,7 @@ def extract_charged_amounts_from_reddition(charges_text, client):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0,
+        temperature=0.1,
         response_format={"type": "json_object"}
     )
     
