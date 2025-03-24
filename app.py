@@ -54,13 +54,36 @@ def extract_text_from_image(uploaded_file):
         return ""
 
 # Fonctions pour extraire le texte de différents types de fichiers
+# Fonction OCR pour les PDF composés d'images
+def ocr_from_pdf(pdf_path):
+    """Extraire le texte d'un PDF à l'aide de l'OCR"""
+    try:
+        images = convert_from_path(pdf_path)
+        text = ""
+        for image in images:
+            image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            text += pytesseract.image_to_string(image_cv, lang='fra')
+        return text
+    except Exception as e:
+        st.error(f"Erreur lors de l'OCR du PDF: {str(e)}")
+        return ""
+
+# Fonctions pour extraire le texte de différents types de fichiers
 def extract_text_from_pdf(uploaded_file):
     """Extraire le texte d'un fichier PDF"""
     text = ""
     try:
         pdf_reader = PyPDF2.PdfReader(uploaded_file)
         for page_num in range(len(pdf_reader.pages)):
-            text += pdf_reader.pages[page_num].extract_text() + "\n"
+            page_text = pdf_reader.pages[page_num].extract_text()
+            if page_text:
+                text += page_text + "\n"
+        
+        # Si aucun texte n'est extrait, utiliser OCR
+        if not text.strip():
+            uploaded_file.seek(0)  # Rewind to start of file
+            text = ocr_from_pdf(uploaded_file)
+        
         return text
     except Exception as e:
         st.error(f"Erreur lors de l'extraction du texte du PDF: {str(e)}")
@@ -83,6 +106,7 @@ def extract_text_from_txt(uploaded_file):
         st.error(f"Erreur lors de l'extraction du texte du fichier TXT: {str(e)}")
         return ""
 
+# Fonction pour obtenir le contenu des fichiers
 def get_file_content(uploaded_file):
     """Obtenir le contenu du fichier selon son type"""
     if uploaded_file is None:
