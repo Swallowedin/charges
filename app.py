@@ -168,7 +168,7 @@ def extract_charges_clauses_with_ai(bail_text, client):
         
         Ta tâche consiste à extraire uniquement les clauses et sections du bail commercial suivant qui concernent les charges locatives, leur répartition, et leur facturation.
         
-        Inclus dans ta sélection:
+        Inclus dans ta sélection uniquement les clauses concernant précisément la refacturation des charges au preneur. aide toi de la liste suivante au besoin :
         - Toute clause mentionnant les charges, frais ou dépenses
         - Les articles concernant la répartition des charges
         - Les clauses relatives aux provisions sur charges
@@ -176,7 +176,7 @@ def extract_charges_clauses_with_ai(bail_text, client):
         - Les sections traitant de la reddition des charges
         - Les articles concernant les impôts et taxes refacturés
         
-        Retourne uniquement le texte des clauses pertinentes, sans commentaire ni analyse. 
+        Retourne uniquement le texte des clauses pertinentes dans leur intégralité, sans commentaire ni analyse. 
         Assure-toi de conserver le format original et la numérotation des articles.
         
         Bail à analyser:
@@ -207,7 +207,7 @@ def extract_charges_clauses_with_ai(bail_text, client):
 
 def extract_refacturable_charges_from_bail(bail_text, client):
     """
-    Extrait spécifiquement les charges refacturables mentionnées dans le bail.
+    Extrait spécifiquement les charges refacturables mentionnées dans le bail en détaillant les différentes catégories de charges locatives que tu identifies.
     """
     try:
         # Extraction des clauses pertinentes d'abord
@@ -218,7 +218,7 @@ def extract_refacturable_charges_from_bail(bail_text, client):
         ## Tâche d'extraction précise
         Tu es un analyste juridique spécialisé dans les baux commerciaux.
         
-        Ta seule tâche est d'extraire la liste précise des charges qui sont explicitement mentionnées comme refacturables au locataire dans le bail commercial.
+        Ta seule tâche est d'extraire la liste précise des charges qui sont explicitement mentionnées comme refacturables au locataire dans le bail commercial en détaillant les différentes catégories que tu identifies dans les charges locatives.
         
         Voici les clauses du bail concernant les charges:
         ```
@@ -226,8 +226,8 @@ def extract_refacturable_charges_from_bail(bail_text, client):
         ```
         
         ## Instructions précises
-        1. Identifie uniquement les postes de charges expressément mentionnés comme refacturables au locataire
-        2. Pour chaque charge, indique l'article précis ou la clause du bail qui la mentionne
+        1. Identifie uniquement les postes et catégories de charges expressément mentionnés comme refacturables au locataire
+        2. Liste chacun de ces postes ou catégories, et ne t'arrête pas à une catégorie généraliste comme "charges locatives"
         3. N'invente aucun poste de charge qui ne serait pas explicitement mentionné
         4. Si une charge est ambiguë ou implicite, indique-le clairement
         
@@ -286,7 +286,7 @@ def extract_charged_amounts_from_reddition(charges_text, client):
     prompt = f"""
     ## EXTRACTION PRÉCISE DES CHARGES LOCATIVES
     
-    Le document suivant est un relevé de charges locatives de SCI PASTEUR.
+    Le document suivant est un relevé de charges locatives refacturées au preneur.
     
     ```
     {charges_text[:10000]}
@@ -295,7 +295,7 @@ def extract_charged_amounts_from_reddition(charges_text, client):
     ## INSTRUCTIONS
     
     1. Identifie les différentes charges dans le document qui liste les charges et leur quote-part
-    2. extraitds précisément
+    2. extraits précisément
        - Le nom exact de la charge (ex: "NETTOYAGE EXTERIEUR")
        - Le montant facturé (HT et TTC si il y ales deux )
     3. Identifie également le montant TOTAL des charges en HT et TTC
@@ -379,10 +379,10 @@ def analyse_charges_conformity(refacturable_charges, charged_amounts, client):
         ```
         
         ## Instructions précises
-        1. Pour chaque charge facturée, détermine si elle correspond à une charge refacturable selon le bail
-        2. Calcule le pourcentage que représente chaque charge par rapport au total des charges facturées
-        3. Évalue la conformité de chaque charge par rapport au bail
-        4. Identifie les charges potentiellement contestables avec une justification précise
+        1. Pour chaque charge facturée, détermine si elle correspond à une charge refacturable expressément prévue par le bail
+        2. Évalue la conformité de chaque charge par rapport au bail
+        3. Identifie les charges potentiellement contestables qui ne sont pas susceptibles d'être refacturée au preneur avec une justification précise
+        4. Calcule le pourcentage que représente chaque charge par rapport au total des charges facturées
         5. Calcule le montant total des charges facturées
         6. Détermine un taux global de conformité basé sur le pourcentage des charges conformes
         
@@ -507,7 +507,7 @@ def retry_extract_refacturable_charges(bail_text, client):
         ## Tâche d'extraction spécifique
         Tu es un juriste spécialisé en droit des baux commerciaux en France.
         
-        Examine attentivement ce bail commercial et identifie TOUTES les charges qui peuvent être refacturées au locataire.
+        Examine attentivement ce bail commercial et identifie TOUTES les charges qui peuvent être refacturées au locataire de manière précise et en détaillant chaque catégorie de charge locative que tu identifies.
         
         ```
         {bail_text[:10000]}
