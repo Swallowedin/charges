@@ -13,11 +13,10 @@ import pytesseract
 import cv2
 import numpy as np
 import os
-import hashlib
 
 # Configuration de la page
 st.set_page_config(
-    page_title="Analyseur de Documents avec GPT-4o-mini",
+    page_title="Analyseur de Charges Locatives Commerciales avec GPT-4o-mini",
     page_icon="📊",
     layout="wide"
 )
@@ -25,8 +24,6 @@ st.set_page_config(
 # Initialisation de l'état de la session
 if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
-if 'analysis_cache' not in st.session_state:
-    st.session_state.analysis_cache = {}
 
 # Configuration de l'API OpenAI
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"] if "OPENAI_API_KEY" in st.secrets else os.getenv('OPENAI_API_KEY')
@@ -119,49 +116,40 @@ def process_multiple_files(uploaded_files):
     
     return combined_text
 
-def get_content_hash(text1, text2):
-    """Génère un hash unique pour les entrées combinées"""
-    combined = (text1 or "") + "|" + (text2 or "")
-    return hashlib.md5(combined.encode('utf-8')).hexdigest()
+# Fonction supprimée car nous n'utilisons plus le système de cache
 
 def analyze_with_openai(text1, text2, document_type):
     """
-    Analyse les documents avec OpenAI, avec mise en cache pour des résultats cohérents
+    Analyse les documents avec OpenAI, avec des paramètres assurant la cohérence des résultats
     """
     try:
-        # Générer un hash unique pour cette combinaison de documents
-        content_hash = get_content_hash(text1, text2)
-        
-        # Vérifier si l'analyse est déjà en cache
-        if content_hash in st.session_state.analysis_cache:
-            st.success("Résultat récupéré du cache (analyse précédente identique)")
-            return st.session_state.analysis_cache[content_hash]
         
         prompt = f"""
-        # Analyse de documents
+        # Analyse de charges de bail commercial
         
         ## Contexte
-        Document type: {document_type}
+        Analyse de charges locatives de bail commercial
         
-        ## Document 1
+        ## Contrat de bail / Clauses de charges
         {text1[:10000]}
         
-        ## Document 2
+        ## Reddition des charges
         {text2[:10000]}
         
         ## Tâche
-        1. Extraire les informations clés des documents
-        2. Identifier les thèmes principaux
-        3. Analyser la cohérence entre les documents
-        4. Formuler des observations pertinentes
+        1. Identifier les clauses concernant les charges dans le bail
+        2. Extraire les postes de charges facturés dans la reddition
+        3. Analyser la conformité entre les charges facturées et le bail
+        4. Évaluer si certaines charges pourraient être contestables
+        5. Formuler des observations et recommandations
         
         ## Format JSON
         {{
-            "document1_analysis":[{{"title":"","content":""}}],
-            "document2_analysis":[{{"title":"","content":""}}],
+            "clauses_analysis":[{{"title":"","content":""}}],
+            "charges_analysis":[{{"poste":"","montant":0,"pourcentage":0,"conformite":"conforme|à vérifier|non conforme","details":"","contestable":true|false,"raison_contestation":""}}],
             "themes": [""],
-            "coherence_analysis": {{"coherence_level":"élevée|moyenne|faible","details":""}},
-            "observations": [""]
+            "coherence_analysis": {{"conformite_globale":"élevée|moyenne|faible","details":""}},
+            "recommandations": [""]
         }}
         """
 
@@ -192,8 +180,6 @@ def analyze_with_openai(text1, text2, document_type):
             result = json.loads(response.choices[0].message.content)
             st.success("Analyse réalisée avec gpt-3.5-turbo")
         
-        # Stocker le résultat dans le cache
-        st.session_state.analysis_cache[content_hash] = result
         return result
 
     except Exception as e:
@@ -341,20 +327,19 @@ def generate_pdf_report(analysis, document_type, text1=None, text2=None):
 
 # Interface utilisateur Streamlit
 def main():
-    st.title("Analyseur de Documents avec GPT-4o-mini")
+    st.title("Analyseur de Charges Locatives Commerciales avec GPT-4o-mini")
     st.markdown("""
-    Cet outil analyse la cohérence entre deux documents en utilisant GPT-4o-mini.
-    Pour les mêmes documents en entrée, l'analyse sera identique à chaque exécution.
+    Cet outil analyse la cohérence entre les clauses de votre bail commercial et la reddition des charges en utilisant GPT-4o-mini.
+    Les résultats d'analyse sont cohérents et fiables pour les mêmes documents en entrée.
     """)
 
     # Sidebar pour la configuration
     st.sidebar.header("Configuration")
 
-    document_type = st.sidebar.selectbox(
-        "Type de document",
-        options=["rapport", "contrat", "article", "correspondance", "autre"],
-        index=0
-    )
+    # Pas besoin de sélectionner le type de bail puisque c'est toujours commercial
+    document_type = "commercial"
+    
+    st.sidebar.info("Cet outil est conçu spécifiquement pour analyser les baux commerciaux et leurs charges.")
 
     # Interface principale avec onglets
     tab1, tab2 = st.tabs(["Saisie manuelle", "Téléchargement de fichiers"])
@@ -365,22 +350,24 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                st.subheader("Document 1")
+                st.subheader("Contrat de bail commercial / Clauses de charges")
                 document1_manual = st.text_area(
-                    "Copiez-collez le contenu du premier document",
-                    height=250
+                    "Copiez-collez les clauses du bail commercial concernant les charges",
+                    height=250,
+                    help="Entrez les sections du bail commercial qui mentionnent la répartition et facturation des charges"
                 )
 
             with col2:
-                st.subheader("Document 2")
+                st.subheader("Reddition des charges")
                 document2_manual = st.text_area(
-                    "Copiez-collez le contenu du deuxième document",
-                    height=250
+                    "Copiez-collez le détail des charges facturées",
+                    height=250,
+                    help="Entrez le détail des charges qui vous ont été facturées (postes et montants)"
                 )
 
             specific_questions = st.text_area(
                 "Questions spécifiques (facultatif)",
-                help="Avez-vous des questions particulières concernant ces documents?"
+                help="Avez-vous des questions particulières concernant certaines charges?"
             )
 
             submitted_manual = st.form_submit_button("Analyser les documents")
@@ -391,22 +378,24 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                st.subheader("Document 1")
+                st.subheader("Contrat de bail commercial / Clauses")
                 doc1_files = st.file_uploader(
-                    "Téléchargez le(s) fichier(s) du document 1 (PDF, Word, TXT, Image)",
+                    "Téléchargez le(s) fichier(s) du contrat de bail commercial (PDF, Word, TXT, Image)",
                     type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
-                    accept_multiple_files=True
+                    accept_multiple_files=True,
+                    help="Téléchargez votre contrat de bail commercial ou les clauses concernant les charges"
                 )
 
                 if doc1_files:
                     st.write(f"{len(doc1_files)} fichier(s) téléchargé(s) pour le document 1")
 
             with col2:
-                st.subheader("Document 2")
+                st.subheader("Reddition des charges")
                 doc2_files = st.file_uploader(
-                    "Téléchargez le(s) fichier(s) du document 2 (PDF, Word, TXT, Image)",
+                    "Téléchargez le(s) fichier(s) de reddition des charges (PDF, Word, TXT, Image)",
                     type=["pdf", "docx", "txt", "png", "jpg", "jpeg"],
-                    accept_multiple_files=True
+                    accept_multiple_files=True,
+                    help="Téléchargez le document détaillant les charges qui vous sont facturées"
                 )
 
                 if doc2_files:
@@ -465,22 +454,22 @@ def main():
 
         st.header("Résultats de l'analyse")
 
-        # Afficher le niveau de cohérence
-        coherence_level = analysis['coherence_analysis']['coherence_level']
+        # Afficher le niveau de conformité
+        coherence_level = analysis['coherence_analysis']['conformite_globale']
         coherence_details = analysis['coherence_analysis']['details']
         
-        # Définir la couleur en fonction du niveau de cohérence
+        # Définir la couleur en fonction du niveau de conformité
         color_map = {"élevée": "success", "moyenne": "warning", "faible": "error"}
         alert_type = color_map.get(coherence_level, "info")
         
         if alert_type == "success":
-            st.success(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
+            st.success(f"Niveau de conformité: {coherence_level}. {coherence_details}")
         elif alert_type == "warning":
-            st.warning(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
+            st.warning(f"Niveau de conformité: {coherence_level}. {coherence_details}")
         elif alert_type == "error":
-            st.error(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
+            st.error(f"Niveau de conformité: {coherence_level}. {coherence_details}")
         else:
-            st.info(f"Niveau de cohérence: {coherence_level}. {coherence_details}")
+            st.info(f"Niveau de conformité: {coherence_level}. {coherence_details}")
 
         # Afficher les thèmes principaux
         st.subheader("Thèmes principaux")
@@ -495,22 +484,42 @@ def main():
                 st.pyplot(fig)
 
         # Afficher l'analyse des documents dans des onglets
-        doc1_tab, doc2_tab = st.tabs(["Analyse Document 1", "Analyse Document 2"])
+        doc1_tab, doc2_tab = st.tabs(["Analyse des clauses du bail", "Analyse des charges facturées"])
         
         with doc1_tab:
-            for section in analysis["document1_analysis"]:
+            for section in analysis["clauses_analysis"]:
                 with st.expander(section["title"]):
                     st.markdown(section["content"])
         
         with doc2_tab:
-            for section in analysis["document2_analysis"]:
-                with st.expander(section["title"]):
-                    st.markdown(section["content"])
+            # Créer DataFrame pour affichage des charges
+            if "charges_analysis" in analysis:
+                charges_df = pd.DataFrame([
+                    {
+                        "Poste": charge["poste"],
+                        "Montant (€)": charge["montant"],
+                        "% du total": f"{charge['pourcentage']:.1f}%",
+                        "Conformité": charge["conformite"],
+                        "Contestable": "Oui" if charge["contestable"] else "Non"
+                    }
+                    for charge in analysis["charges_analysis"]
+                ])
+                
+                st.dataframe(charges_df)
+                
+                # Détails des charges contestables
+                contestable_charges = [c for c in analysis["charges_analysis"] if c.get("contestable")]
+                if contestable_charges:
+                    st.subheader("Charges potentiellement contestables")
+                    for charge in contestable_charges:
+                        with st.expander(f"{charge['poste']} ({charge['montant']}€)"):
+                            st.markdown(f"**Raison:** {charge['raison_contestation']}")
+                            st.markdown(f"**Détails:** {charge['details']}")
 
-        # Observations
-        st.subheader("Observations")
-        for i, obs in enumerate(analysis["observations"]):
-            st.markdown(f"{i+1}. {obs}")
+        # Recommandations
+        st.subheader("Recommandations")
+        for i, rec in enumerate(analysis["recommandations"]):
+            st.markdown(f"{i+1}. {rec}")
 
         # Options d'export
         st.header("Exporter les résultats")
@@ -521,7 +530,7 @@ def main():
             st.download_button(
                 label="Télécharger l'analyse en JSON",
                 data=json.dumps(analysis, indent=2, ensure_ascii=False).encode('utf-8'),
-                file_name='analyse_documents.json',
+                file_name='analyse_charges_locatives.json',
                 mime='application/json',
             )
         
@@ -543,7 +552,7 @@ def main():
                 st.download_button(
                     label="Télécharger le rapport PDF",
                     data=pdf_content,
-                    file_name="rapport_analyse_documents.pdf",
+                    file_name="rapport_analyse_charges_locatives.pdf",
                     mime="application/pdf",
                 )
             except Exception as e:
