@@ -168,68 +168,196 @@ def extract_charges_clauses_with_ai(bail_text, client):
         st.warning(f"Extraction intelligente des clauses non disponible: {str(e)}")
         return bail_text[:15000]
 
-def analyze_with_openai(text1, text2, document_type):
+def extract_refacturable_charges_from_bail(bail_text, client):
     """
-    Analyse les documents avec OpenAI, avec des paramètres assurant la cohérence des résultats
+    Extrait spécifiquement les charges refacturables mentionnées dans le bail.
     """
     try:
-        # Extraire les clauses pertinentes concernant les charges du texte du bail en utilisant l'IA
-        relevant_bail_text = extract_charges_clauses_with_ai(text1, client)
+        # Extraction des clauses pertinentes d'abord
+        relevant_bail_text = extract_charges_clauses_with_ai(bail_text, client)
         
-        # Informer l'utilisateur de l'optimisation
-        original_length = len(text1)
-        extracted_length = len(relevant_bail_text)
-        reduction_percent = round(100 - (extracted_length / original_length * 100), 1) if original_length > 0 else 0
-        
-        if reduction_percent > 10:  # Seulement afficher si réduction significative
-            st.info(f"🔍 Optimisation par IA: {original_length:,} caractères → {extracted_length:,} caractères ({reduction_percent}% de réduction)")
-            
-            # Afficher un aperçu des sections extraites
-            with st.expander("Aperçu des clauses de charges extraites par l'IA"):
-                st.text(relevant_bail_text[:1000] + "..." if len(relevant_bail_text) > 1000 else relevant_bail_text)
-
+        # Prompt spécifique pour extraire uniquement les charges refacturables
         prompt = f"""
-        # Analyse de charges de bail commercial
+        ## Tâche d'extraction précise
+        Tu es un analyste juridique spécialisé dans les baux commerciaux.
         
-        ## Contexte
-        Tu es un expert en analyse de baux commerciaux et de charges locatives. Ta mission est d'analyser rigoureusement les charges facturées au locataire par rapport aux clauses du bail.
+        Ta seule tâche est d'extraire la liste précise des charges qui sont explicitement mentionnées comme refacturables au locataire dans le bail commercial.
+        
+        Voici les clauses du bail concernant les charges:
+        ```
+        {relevant_bail_text[:15000]}
+        ```
         
         ## Instructions précises
-        1. Identifie précisément les charges refacturables selon le bail
-        2. Extrait chaque poste de charge facturé avec son montant exact
-        3. Calcule le pourcentage que représente chaque charge par rapport au total
-        4. Vérifie si chaque charge facturée correspond à une charge autorisée dans le bail
-        5. Identifie les charges potentiellement contestables avec une justification claire
+        1. Identifie uniquement les postes de charges expressément mentionnés comme refacturables au locataire
+        2. Pour chaque charge, indique l'article précis ou la clause du bail qui la mentionne
+        3. N'invente aucun poste de charge qui ne serait pas explicitement mentionné
+        4. Si une charge est ambiguë ou implicite, indique-le clairement
         
-        ## Contrat de bail commercial / Clauses de charges
-        {relevant_bail_text[:10000]}
+        ## Format attendu (JSON)
+        ```
+        [
+            {{
+                "categorie": "Catégorie exacte mentionnée dans le bail",
+                "description": "Description exacte de la charge, telle que rédigée dans le bail",
+                "base_legale": "Article X.X ou clause Y du bail",
+                "certitude": "élevée|moyenne|faible"
+            }}
+        ]
+        ```
         
-        ## Reddition des charges
-        {text2[:10000]}
+        Si aucune charge refacturable n'est mentionnée dans le bail, retourne un tableau vide.
+        """
         
-        ## Format de sortie JSON attendu (strictement)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            seed=42,
+            response_format={"type": "json_object"}
+        )
+        
+        # Extraire et analyser la réponse JSON
+        try:
+            result = json.loads(response.choices[0].message.content)
+            # Vérifier si le résultat est une liste directe ou s'il est encapsulé
+            if isinstance(result, dict) and any(k for k in result.keys() if "charge" in k.lower()):
+                for key in result.keys():
+                    if "charge" in key.lower() and isinstance(result[key], list):
+                        return result[key]
+            elif isinstance(result, list):
+                return result
+            else:
+                # Cas où le format ne correspond pas à ce qui est attendu
+                return []
+        except Exception as e:
+            st.warning(f"Erreur lors de l'analyse de la réponse JSON pour les charges refacturables: {str(e)}")
+            return []
+    
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction des charges refacturables: {str(e)}")
+        return []
+
+def extract_charged_amounts_from_reddition(charges_text, client):
+    """
+    Extrait précisément les montants facturés dans la reddition des charges.
+    """
+    try:
+        prompt = f"""
+        ## Tâche d'extraction précise
+        Tu es un expert-comptable spécialisé dans l'analyse de reddition de charges.
+        
+        Ta seule tâche est d'extraire la liste précise des postes de charges et leurs montants exacts tels qu'ils apparaissent dans le document de reddition de charges suivant.
+        
+        Voici le document de reddition de charges:
+        ```
+        {charges_text[:10000]}
+        ```
+        
+        ## Instructions précises
+        1. Extrais UNIQUEMENT les postes de charges et montants explicitement mentionnés dans le document
+        2. Pour chaque charge, indique son montant exact tel qu'il apparaît (ne fais aucun calcul ni arrondi)
+        3. Si un montant est ambigu ou nécessite un calcul, cite le texte exact du document
+        4. N'invente aucun poste ou montant qui ne serait pas explicitement mentionné
+        5. Ignore tout autre texte ou information qui n'est pas directement une charge ou un montant
+        
+        ## Format attendu (JSON)
+        ```
+        [
+            {{
+                "poste": "Intitulé exact du poste tel qu'il apparaît dans le document",
+                "montant": 1234.56,
+                "texte_original": "Citation exacte du document mentionnant cette charge"
+            }}
+        ]
+        ```
+        
+        Si tu ne trouves aucun montant précis dans le document, indique-le dans une propriété "erreur" et retourne un tableau vide.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            seed=42,
+            response_format={"type": "json_object"}
+        )
+        
+        # Extraire et analyser la réponse JSON
+        try:
+            result = json.loads(response.choices[0].message.content)
+            # Vérifier si le résultat est une liste directe ou s'il est encapsulé
+            if isinstance(result, dict) and "erreur" in result:
+                st.warning(f"Erreur signalée par l'IA: {result['erreur']}")
+                return []
+            elif isinstance(result, dict) and any(k for k in result.keys() if "charge" in k.lower() or "montant" in k.lower()):
+                for key in result.keys():
+                    if isinstance(result[key], list):
+                        return result[key]
+            elif isinstance(result, list):
+                return result
+            else:
+                return []
+        except Exception as e:
+            st.warning(f"Erreur lors de l'analyse de la réponse JSON pour les montants facturés: {str(e)}")
+            return []
+    
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction des montants facturés: {str(e)}")
+        return []
+
+def analyse_charges_conformity(refacturable_charges, charged_amounts, client):
+    """
+    Analyse la conformité entre les charges refacturables et les montants facturés.
+    """
+    try:
+        # Convertir les listes en JSON pour les inclure dans le prompt
+        refacturable_json = json.dumps(refacturable_charges, ensure_ascii=False)
+        charged_json = json.dumps(charged_amounts, ensure_ascii=False)
+        
+        prompt = f"""
+        ## Tâche d'analyse
+        Tu es un expert juridique et comptable spécialisé dans l'analyse de conformité des charges locatives commerciales.
+        
+        Ta tâche est d'analyser la conformité entre les charges refacturables selon le bail et les charges effectivement facturées.
+        
+        ## Données d'entrée
+        
+        ### Charges refacturables selon le bail:
+        ```json
+        {refacturable_json}
+        ```
+        
+        ### Charges effectivement facturées:
+        ```json
+        {charged_json}
+        ```
+        
+        ## Instructions précises
+        1. Pour chaque charge facturée, détermine si elle correspond à une charge refacturable selon le bail
+        2. Calcule le pourcentage que représente chaque charge par rapport au total des charges facturées
+        3. Évalue la conformité de chaque charge par rapport au bail
+        4. Identifie les charges potentiellement contestables avec une justification précise
+        5. Calcule le montant total des charges facturées
+        6. Détermine un taux global de conformité basé sur le pourcentage des charges conformes
+        
+        ## Format attendu (JSON)
+        ```json
         {{
-            "charges_refacturables": [
-                {{
-                    "categorie": "Nom de la catégorie de charge",
-                    "description": "Description exacte de la charge selon le bail",
-                    "base_legale": "Article ou clause du bail permettant cette charge"
-                }}
-            ],
             "charges_facturees": [
                 {{
                     "poste": "Intitulé exact de la charge facturée",
-                    "montant": 0,
-                    "pourcentage": 0,
+                    "montant": 1234.56,
+                    "pourcentage": 25.5,
                     "conformite": "conforme|à vérifier|non conforme",
-                    "justification": "Raison précise de la conformité ou non-conformité",
+                    "justification": "Explication précise de la conformité ou non",
                     "contestable": true|false,
-                    "raison_contestation": "Raison précise de la contestation possible"
+                    "raison_contestation": "Raison précise si contestable"
                 }}
             ],
-            "montant_total": 0,
+            "montant_total": 5000.00,
             "analyse_globale": {{
-                "taux_conformite": 0,
+                "taux_conformite": 75,
                 "conformite_detail": "Explication détaillée du taux de conformité"
             }},
             "recommandations": [
@@ -237,41 +365,89 @@ def analyze_with_openai(text1, text2, document_type):
                 "Recommandation précise et actionnable 2"
             ]
         }}
-        
-        Sois extrêmement précis dans les montants, les pourcentages et l'identification des charges. Ne crée pas de catégories vagues ou génériques. N'inclus pas de section "thèmes principaux". Concentre-toi uniquement sur les données factuelles et l'analyse des charges.
+        ```
         """
-
-        # Essayer d'abord avec gpt-4o-mini
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            seed=42,
+            response_format={"type": "json_object"}
+        )
+        
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,  # Température basse pour cohérence maximale
-                seed=42,  # Seed fixe pour assurer la cohérence des résultats
-                response_format={"type": "json_object"}  # Forcer une réponse JSON
-            )
             result = json.loads(response.choices[0].message.content)
-            st.success("Analyse réalisée avec gpt-4o-mini")
-            
+            # Ajouter les charges refacturables au résultat pour l'affichage complet
+            result["charges_refacturables"] = refacturable_charges
+            return result
         except Exception as e:
-            st.warning(f"Erreur avec gpt-4o-mini: {str(e)}. Tentative avec gpt-3.5-turbo...")
+            st.warning(f"Erreur lors de l'analyse de la réponse JSON pour l'analyse de conformité: {str(e)}")
+            return {
+                "charges_refacturables": refacturable_charges,
+                "charges_facturees": charged_amounts,
+                "montant_total": sum(charge.get("montant", 0) for charge in charged_amounts),
+                "analyse_globale": {
+                    "taux_conformite": 0,
+                    "conformite_detail": "Impossible d'analyser la conformité en raison d'une erreur."
+                },
+                "recommandations": ["Vérifier manuellement la conformité des charges."]
+            }
+    
+    except Exception as e:
+        st.error(f"Erreur lors de l'analyse de conformité: {str(e)}")
+        return {
+            "charges_refacturables": refacturable_charges,
+            "charges_facturees": charged_amounts,
+            "montant_total": sum(charge.get("montant", 0) for charge in charged_amounts),
+            "analyse_globale": {
+                "taux_conformite": 0,
+                "conformite_detail": "Impossible d'analyser la conformité en raison d'une erreur."
+            },
+            "recommandations": ["Vérifier manuellement la conformité des charges."]
+        }
+
+def analyze_with_openai(text1, text2, document_type):
+    """
+    Analyse les documents en suivant une approche structurée en trois étapes:
+    1. Extraction des charges refacturables du bail
+    2. Extraction des montants facturés de la reddition
+    3. Analyse de la conformité entre les deux
+    """
+    try:
+        with st.spinner("Étape 1/3: Extraction des charges refacturables du bail..."):
+            # Extraire les charges refacturables mentionnées dans le bail
+            refacturable_charges = extract_refacturable_charges_from_bail(text1, client)
             
-            # Si échec, basculer vers gpt-3.5-turbo
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                seed=42,  # Même seed pour cohérence
-                response_format={"type": "json_object"}
-            )
+            if refacturable_charges:
+                st.success(f"✅ {len(refacturable_charges)} postes de charges refacturables identifiés dans le bail")
+            else:
+                st.warning("⚠️ Aucune charge refacturable clairement identifiée dans le bail")
+        
+        with st.spinner("Étape 2/3: Extraction des montants facturés..."):
+            # Extraire les montants facturés mentionnés dans la reddition
+            charged_amounts = extract_charged_amounts_from_reddition(text2, client)
             
-            result = json.loads(response.choices[0].message.content)
-            st.success("Analyse réalisée avec gpt-3.5-turbo")
+            if charged_amounts:
+                total = sum(charge.get("montant", 0) for charge in charged_amounts)
+                st.success(f"✅ {len(charged_amounts)} postes de charges facturés identifiés, pour un total de {total:.2f}€")
+            else:
+                st.warning("⚠️ Aucun montant facturé clairement identifié dans la reddition des charges")
+        
+        with st.spinner("Étape 3/3: Analyse de la conformité..."):
+            # Analyser la conformité entre les charges refacturables et facturées
+            result = analyse_charges_conformity(refacturable_charges, charged_amounts, client)
+            
+            if result:
+                conformity = result.get("analyse_globale", {}).get("taux_conformite", 0)
+                st.success(f"✅ Analyse complète avec un taux de conformité de {conformity}%")
+            else:
+                st.error("❌ Impossible de finaliser l'analyse de conformité")
         
         return result
     
     except Exception as e:
-        st.error(f"Erreur lors de l'analyse avec OpenAI: {str(e)}")
+        st.error(f"Erreur lors de l'analyse: {str(e)}")
         # Retourner une analyse par défaut en cas d'erreur
         return {
             "charges_refacturables": [],
@@ -476,7 +652,10 @@ def main():
     st.title("Analyseur de Charges Locatives Commerciales avec GPT-4o-mini")
     st.markdown("""
     Cet outil analyse la cohérence entre les clauses de votre bail commercial et la reddition des charges en utilisant GPT-4o-mini.
-    Les résultats d'analyse sont cohérents et fiables pour les mêmes documents en entrée.
+    L'analyse se fait en trois étapes précises:
+    1. Extraction des charges refacturables du bail
+    2. Extraction des montants facturés de la reddition
+    3. Analyse de la conformité entre les charges autorisées et les charges facturées
     """)
 
     # Sidebar pour la configuration
@@ -564,22 +743,22 @@ def main():
         if not document1_manual or not document2_manual:
             st.error("Veuillez remplir les champs obligatoires (clauses du bail et détail des charges).")
         else:
-            with st.spinner("Analyse en cours..."):
-                # Analyser les charges avec OpenAI
-                analysis = analyze_with_openai(document1_manual, document2_manual, document_type)
-                if analysis:
-                    st.session_state.analysis = analysis
-                    st.session_state.analysis_complete = True
-                    # Sauvegarder les textes originaux pour l'export PDF
-                    st.session_state.document1_text = document1_manual
-                    st.session_state.document2_text = document2_manual
+            st.info("📋 Analyse des charges en cours - Cette opération peut prendre une minute...")
+            # Analyser les charges avec l'approche structurée
+            analysis = analyze_with_openai(document1_manual, document2_manual, document_type)
+            if analysis:
+                st.session_state.analysis = analysis
+                st.session_state.analysis_complete = True
+                # Sauvegarder les textes originaux pour l'export PDF
+                st.session_state.document1_text = document1_manual
+                st.session_state.document2_text = document2_manual
 
     # Traitement du formulaire de téléchargement de fichiers
     if submitted_files:
         if not doc1_files or not doc2_files:
             st.error("Veuillez télécharger au moins un fichier pour le bail et un fichier pour les charges.")
         else:
-            with st.spinner("Extraction et analyse des fichiers en cours..."):
+            with st.spinner("Extraction du texte des fichiers..."):
                 # Extraire et combiner le texte de tous les fichiers
                 document1_combined = process_multiple_files(doc1_files)
                 document2_combined = process_multiple_files(doc2_files)
@@ -588,9 +767,10 @@ def main():
                     st.error("Impossible d'extraire le texte des fichiers téléchargés.")
                 else:
                     # Afficher un résumé du texte extrait
-                    st.info(f"Texte extrait: Bail ({len(document1_combined)} caractères), Charges ({len(document2_combined)} caractères)")
+                    st.info(f"📄 Texte extrait: Bail ({len(document1_combined)} caractères), Charges ({len(document2_combined)} caractères)")
 
-                    # Analyser les charges avec OpenAI
+                    st.info("📋 Analyse des charges en cours - Cette opération peut prendre une minute...")
+                    # Analyser les charges avec l'approche structurée
                     analysis = analyze_with_openai(document1_combined, document2_combined, document_type)
                     if analysis:
                         st.session_state.analysis = analysis
@@ -622,7 +802,17 @@ def main():
         # Section 1: Charges refacturables selon le bail
         st.markdown("## Charges refacturables selon le bail")
         if "charges_refacturables" in analysis and analysis["charges_refacturables"]:
-            refacturables_df = pd.DataFrame(analysis["charges_refacturables"])
+            # Créer un DataFrame restructuré pour un meilleur affichage
+            refined_data = []
+            for charge in analysis["charges_refacturables"]:
+                refined_data.append({
+                    "Catégorie": charge.get("categorie", ""),
+                    "Description": charge.get("description", ""),
+                    "Base légale": charge.get("base_legale", ""),
+                    "Certitude": charge.get("certitude", "")
+                })
+            
+            refacturables_df = pd.DataFrame(refined_data)
             st.dataframe(refacturables_df, use_container_width=True)
         else:
             st.warning("Aucune information sur les charges refacturables n'a été identifiée dans le bail.")
