@@ -14,6 +14,7 @@ import numpy as np
 import os
 from pdf2image import convert_from_path
 import tempfile
+import requests
 
 # Configuration de la page
 st.set_page_config(
@@ -50,29 +51,37 @@ def extract_text_from_image(uploaded_file):
         st.error(f"Erreur lors de l'extraction du texte de l'image: {str(e)}")
         return ""
 
-# Fonction OCR pour les PDF
-def ocr_from_pdf(uploaded_file):
-    """Extraire le texte d'un PDF à l'aide de l'OCR"""
+# Fonction OCR pour les PDF avec OCR.Space
+def ocr_from_pdf_using_api(uploaded_file):
+    """Extraire le texte d'un PDF à l'aide de l'API OCR.Space."""
     try:
         # Sauvegarder le fichier uploadé sur le système de fichiers temporaire
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-            tmp.write(uploaded_file.getbuffer())  # Écrit le fichier uploadé dans un fichier temporaire
+            tmp.write(uploaded_file.getbuffer())
             temp_pdf_path = tmp.name
-
-        images = convert_from_path(temp_pdf_path)
-        text = ""
-        for image in images:
-            image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-            text += pytesseract.image_to_string(image_cv, lang='fra')
         
-        return text
+        with open(temp_pdf_path, 'rb') as file:
+            response = requests.post(
+                "https://api.ocr.space/parse/image",
+                files={'file': file},
+                data={'apikey': 'K88510884388957'}  # Remplacez par votre clé API
+            )
+
+        result = response.json()
+
+        if result["OCRExitCode"] == 1:
+            return result['ParsedResults'][0]['ParsedText']
+        else:
+            st.error("Erreur dans le traitement OCR : " + result["ErrorMessage"])
+            return ""
+    
     except Exception as e:
         st.error(f"Erreur lors de l'OCR du PDF: {str(e)}")
         return ""
 
 # Fonction pour extraire le texte d'un PDF
 def extract_text_from_pdf(uploaded_file):
-    """Extraire le texte d'un fichier PDF"""
+    """Extraire le texte d'un fichier PDF."""
     text = ""
     try:
         pdf_reader = PyPDF2.PdfReader(uploaded_file)
@@ -80,19 +89,20 @@ def extract_text_from_pdf(uploaded_file):
             page_text = pdf_reader.pages[page_num].extract_text()
             if page_text:
                 text += page_text + "\n"
-        
+
         # Si aucun texte n'est extrait, utiliser OCR
         if not text.strip():
             uploaded_file.seek(0)  # Rewind to start of file
-            text = ocr_from_pdf(uploaded_file)
-        
+            text = ocr_from_pdf_using_api(uploaded_file)
+
         return text
     except Exception as e:
         st.error(f"Erreur lors de l'extraction du texte du PDF: {str(e)}")
         return ""
 
+# Fonction pour extraire le texte d'un fichier Word
 def extract_text_from_docx(uploaded_file):
-    """Extraire le texte d'un fichier Word"""
+    """Extraire le texte d'un fichier Word."""
     try:
         text = docx2txt.process(uploaded_file)
         return text
@@ -100,8 +110,9 @@ def extract_text_from_docx(uploaded_file):
         st.error(f"Erreur lors de l'extraction du texte du fichier Word: {str(e)}")
         return ""
 
+# Fonction pour extraire le texte d'un fichier TXT
 def extract_text_from_txt(uploaded_file):
-    """Extraire le texte d'un fichier TXT"""
+    """Extraire le texte d'un fichier TXT."""
     try:
         return uploaded_file.getvalue().decode("utf-8")
     except Exception as e:
@@ -110,7 +121,7 @@ def extract_text_from_txt(uploaded_file):
 
 # Fonction pour obtenir le contenu des fichiers
 def get_file_content(uploaded_file):
-    """Obtenir le contenu du fichier selon son type"""
+    """Obtenir le contenu du fichier selon son type."""
     if uploaded_file is None:
         return ""
         
